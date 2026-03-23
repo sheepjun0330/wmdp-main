@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+
+# Notebook
+.ipynb_checkpoints/
+
+# Experiment outputs (중요)
+logs/
+wandb/
+models/
+
+# Results (실험 결과 파일들)
+*results.json
+results.json
+
+# Misc
+*.log
+*.tmp

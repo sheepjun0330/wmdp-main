@@ -30,8 +30,33 @@ def forward_with_cache(model, inputs, module, no_grad=True):
         
     hook_handle.remove()
 
-    return cache[0]
-    
+    return cache[-1]
+
+
+# def forward_with_cache(model, inputs, module, no_grad: bool):
+#     cache = {}
+
+#     def hook_fn(_, __, output):
+#         # 절대 detach / clone 하지 말 것
+#         if isinstance(output, tuple):
+#             cache["z"] = output[0]
+#         else:
+#             cache["z"] = output
+
+#     handle = module.register_forward_hook(hook_fn)
+
+#     if no_grad:
+#         with torch.no_grad():
+#             _ = model(**inputs)
+#     else:
+#         _ = model(**inputs)
+
+#     handle.remove()
+
+#     z = cache["z"]
+
+#     return z
+
 #######################################
 ##### Model and data loading code #####
 #######################################
