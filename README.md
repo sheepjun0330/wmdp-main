@@ -22,3 +22,15 @@ CUDA_VISIBLE_DEVICES=4,5 python -m rmu.unlearn \
   --use_wandb \
   --wandb_project rmu-unlearn \
   --wandb_run_name zephyr_rmu_alm_sam_sam1e-5_bio_tau0.01
+
+
+
+
+### Evaluate 🚀
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 lm-eval \
+  --model hf \
+  --model_args pretrained=models/zephyr_rmu_alm_sam_sam_5e-6 \
+  --tasks mmlu,wmdp \
+  --batch_size 4
