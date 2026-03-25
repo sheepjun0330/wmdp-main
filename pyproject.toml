@@ -1,0 +1,22 @@
+[project]
+name = "wmdp"
+version = "0.1.0"
+description = "RMU-based unlearning experiments and evaluation for WMDP"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "datasets>=2.17,<3",
+    "lm-eval==0.4.2",
+    "numpy>=1.26,<2",
+    "torch==2.1.2",
+    "tqdm>=4.66,<5",
+    "transformers==4.38.2",
+    "wandb>=0.16,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["rmu"]

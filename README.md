@@ -1,7 +1,13 @@
+## Install With uv
+
+```bash
+uv sync
+```
+
 ## 🔧 RMU Unlearning (ALM + SAM + SAM)
 
 ```bash
-CUDA_VISIBLE_DEVICES=4,5 python -m rmu.unlearn \
+CUDA_VISIBLE_DEVICES=4,5 uv run python -m rmu.unlearn \
   --model_name_or_path HuggingFaceH4/zephyr-7b-beta \
   --max_num_batches 150 \
   --batch_size 4 \
@@ -29,10 +35,9 @@ CUDA_VISIBLE_DEVICES=4,5 python -m rmu.unlearn \
 ## Evaluate 🚀
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1 lm-eval \
+CUDA_VISIBLE_DEVICES=0,1 uv run lm-eval \
   --model hf \
   --model_args pretrained=models/zephyr_rmu_alm_sam_sam_5e-6 \
   --tasks mmlu,wmdp \
   --batch_size 4
 ```
-
