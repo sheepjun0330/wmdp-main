@@ -35,3 +35,4 @@ CUDA_VISIBLE_DEVICES=0,1 lm-eval \
   --tasks mmlu,wmdp \
   --batch_size 4
 ```
+
