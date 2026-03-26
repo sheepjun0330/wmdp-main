@@ -6,7 +6,7 @@ set -euo pipefail
 # =========================================
 GPU_ID=0
 SCRIPT="rmu/unlearn.py"
-MODEL="meta-llama/Llama-3.2-1B-Instruct"
+MODEL="HuggingFaceH4/zephyr-7b-beta"
 
 RETAIN_CORPORA="wikitext,wikitext"
 FORGET_CORPORA="bio-forget-corpus,cyber-forget-corpus"
@@ -19,7 +19,7 @@ PARAM_IDS="6"
 SEED=42
 ALPHA="100,100"
 
-METHOD="alm_sam_sam_rmu"
+METHOD="alm_sam_sam_joint2"
 
 # =========================================
 # Fixed params (except LR)
@@ -66,7 +66,7 @@ for LR in "${LRS[@]}"; do
         --model_name_or_path "${MODEL}" \
         --retain_corpora "${RETAIN_CORPORA}" \
         --forget_corpora "${FORGET_CORPORA}" \
-        --method "${METHOD}" \
+        --dual_mode "${METHOD}" \
         --alpha "${ALPHA}" \
         --batch_size "${BATCH_SIZE}" \
         --max_num_batches "${MAX_NUM_BATCHES}" \
@@ -77,16 +77,14 @@ for LR in "${LRS[@]}"; do
         --output_dir "${OUTPUT_DIR}" \
         \
         --tau "${TAU}" \
-        --lam_init "${LAM_INIT}" \
-        --lam_lr "${LAM_LR}" \
+        --lagran_lambda_init "${LAM_INIT}" \
+        --lagran_lambda_lr "${LAM_LR}" \
         \
-        --retain_lr "${LR}" \
-        --forget_lr "${LR}" \
+        --lr "${LR}" \
         --retain_rho "${RHO}" \
         --forget_rho "${RHO}" \
         \
-        --adam_epsilon "${ADAM_EPS}" \
-        --apply_wd_once "${APPLY_WD_ONCE}"
+        --adam_epsilon "${ADAM_EPS}"
 
     done
   done
