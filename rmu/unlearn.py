@@ -176,6 +176,87 @@ def sam_adv_grad_no_step(
 
     return g_list, loss_clean.detach(), loss_adv.detach(), float(grad_norm_clean)
 
+
+def clean_grad_no_step(params, loss_closure, clip_norm=0.0):
+    for p in params:
+        p.grad = None
+
+    loss_clean = loss_closure()
+    loss_clean.backward()
+    _clip_grad(params, clip_norm)
+    grad_norm_clean = _global_grad_norm(params)
+
+    g_list = []
+    for p in params:
+        g_list.append(None if p.grad is None else p.grad.detach().clone())
+        p.grad = None
+
+    return g_list, loss_clean.detach(), float(grad_norm_clean)
+
+
+@torch.no_grad()
+def manual_adamw_update(params, grads, state_map, lr, betas, eps, alpha=1.0):
+    alpha = float(alpha)
+    if alpha == 0.0:
+        return
+
+    for p, g in zip(params, grads):
+        if g is None:
+            continue
+        delta = _adamw_state_step_and_delta(
+            p=p,
+            g=g,
+            state=state_map[p],
+            lr=lr,
+            betas=betas,
+            eps=eps,
+        )
+        p.add_(delta, alpha=alpha)
+
+
+@torch.no_grad()
+def apply_weight_decay_once(params, lr, weight_decay):
+    if weight_decay <= 0.0:
+        return
+    shrink = 1.0 - float(lr) * float(weight_decay)
+    for p in params:
+        p.mul_(shrink)
+
+
+@torch.no_grad()
+def manual_sgd_step(params, lr, weight_decay=0.0):
+    for p in params:
+        if p.grad is None:
+            continue
+        if weight_decay != 0.0:
+            p.add_(p, alpha=-float(lr) * float(weight_decay))
+        p.add_(p.grad, alpha=-float(lr))
+
+
+@torch.no_grad()
+def evaluate_losses(forget_loss_closure, retain_loss_closure):
+    forget_loss = forget_loss_closure().detach()
+    retain_loss = retain_loss_closure().detach()
+    return forget_loss, retain_loss
+
+
+def format_step_log(mode, metrics):
+    parts = [
+        f"[{mode}]",
+        f"loss={metrics['loss']:.4g}",
+        f"unlearn_clean={metrics['unlearn_clean']:.4g}",
+        f"retain_clean={metrics['retain_clean']:.4g}",
+        f"lambda={metrics['lambda']:.4g}",
+        f"constraint={metrics['constraint']:.4g}",
+        f"gn_f={metrics['grad_norm_forget']:.4g}",
+        f"gn_r={metrics['grad_norm_retain']:.4g}",
+    ]
+    if "unlearn_adv" in metrics:
+        parts.insert(3, f"unlearn_adv={metrics['unlearn_adv']:.4g}")
+    if "retain_adv" in metrics:
+        parts.insert(5, f"retain_adv={metrics['retain_adv']:.4g}")
+    return " | ".join(parts)
+
 def run_rmu(
     updated_model,
     frozen_model,
@@ -192,6 +273,19 @@ def run_rmu(
     updated_model = updated_model.train()
     params = get_params(updated_model, args.layer_ids, args.param_ids)
 
+    supported_modes = {
+        "alm_sam_sam_joint2",
+        "alm_sam_adamw_joint",
+        "base_adamw_adamw_joint_alm",
+        "base_adamw_alm_joint",
+        "robust_unlearn_sam_alm",
+        "sharp_minmax_nomask_alm",
+        "uam_alm",
+    }
+    if args.dual_mode not in supported_modes:
+        raise ValueError(
+            f"Unsupported dual_mode={args.dual_mode}. Supported: {sorted(supported_modes)}"
+        )
 
     if args.use_wandb:
         wandb.init(
@@ -217,6 +311,22 @@ def run_rmu(
         args.module_str.format(model_name="updated_model", layer_id=args.layer_id)
     )
 
+    joint_optimizer = None
+    if args.dual_mode == "base_adamw_alm_joint":
+        joint_optimizer = AdamW(
+            params,
+            lr=args.retain_lr,
+            betas=args.retain_betas,
+            weight_decay=args.retain_weight_decay,
+            eps=args.adam_epsilon,
+        )
+    elif args.dual_mode == "sharp_minmax_nomask_alm":
+        joint_optimizer = torch.optim.SGD(
+            params,
+            lr=args.joint_lr,
+            weight_decay=args.joint_weight_decay,
+        )
+
     control_vectors_list = []
     for i in range(len(forget_data_list)):
         random_vector = torch.rand(1,1, updated_model.config.hidden_size, dtype=updated_model.dtype, device=updated_model.device)
@@ -232,7 +342,7 @@ def run_rmu(
     truncation_side = tokenizer.truncation_side
     tokenizer.truncation_side="right"
 
-    for epoch in range(1):
+    for epoch in range(args.epochs):
         print(f"======= Epoch {epoch} =======")
         with tqdm.tqdm(total=num_batches) as pbar:
             for idx in range(num_batches):
@@ -256,6 +366,9 @@ def run_rmu(
                     )
                     return loss
 
+                def neg_forget_loss_closure():
+                    return -forget_loss_closure()
+
                 def retain_loss_closure():
                     loss, _, _, _ = compute_rmu_retain_loss(
                         updated_model=updated_model,
@@ -268,124 +381,381 @@ def run_rmu(
                         max_length=512,
                     )
                     return loss
-                
-                if args.dual_mode != "alm_sam_sam_joint2":
-                    raise ValueError(
-                        f"Currently only dual_mode=alm_sam_sam_joint2 is implemented, got {args.dual_mode}"
+
+                if args.dual_mode == "alm_sam_sam_joint2":
+                    g_r, retain_loss_clean_pre, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        rho=args.retain_rho,
+                        clip_norm=args.retain_clip_norm,
+                        perturb_sign=+1.0,
+                    )
+                    g_f, neg_unlearn_loss_clean_pre, neg_unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        rho=args.forget_rho,
+                        clip_norm=args.forget_clip_norm,
+                        perturb_sign=-1.0,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    unlearn_loss_adv = -neg_unlearn_loss_adv
+                    constraint = float((-args.tau) - neg_unlearn_loss_adv.item())
+                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                    coef = float(lam_next)
+
+                    with torch.no_grad():
+                        apply_weight_decay_once(params, args.retain_lr, args.retain_weight_decay)
+                        manual_adamw_update(
+                            params, g_r, adam_state_r, args.retain_lr, args.retain_betas, args.adam_epsilon
+                        )
+                        manual_adamw_update(
+                            params, g_f, adam_state_f, args.forget_lr, args.forget_betas, args.adam_epsilon, alpha=-coef
+                        )
+                        lam.fill_(lam_next)
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((retain_loss + coef * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_adv.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_adv.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(gn_f_clean),
+                        "grad_norm_retain": float(gn_r_clean),
+                        "coef": float(coef),
+                    }
+                elif args.dual_mode == "alm_sam_adamw_joint":
+                    g_r, retain_loss_clean_pre, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        rho=args.retain_rho,
+                        clip_norm=args.retain_clip_norm,
+                        perturb_sign=+1.0,
+                    )
+                    g_f, neg_unlearn_loss_clean_pre, gn_f_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        clip_norm=args.forget_clip_norm,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    constraint = float((-args.tau) - neg_unlearn_loss_clean_pre.item())
+                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                    coef = float(lam_next)
+
+                    with torch.no_grad():
+                        apply_weight_decay_once(params, args.retain_lr, args.retain_weight_decay)
+                        manual_adamw_update(
+                            params, g_r, adam_state_r, args.retain_lr, args.retain_betas, args.adam_epsilon
+                        )
+                        manual_adamw_update(
+                            params, g_f, adam_state_f, args.forget_lr, args.forget_betas, args.adam_epsilon, alpha=-coef
+                        )
+                        lam.fill_(lam_next)
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((retain_loss + coef * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_clean_pre.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_adv.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(gn_f_clean),
+                        "grad_norm_retain": float(gn_r_clean),
+                        "coef": float(coef),
+                    }
+                elif args.dual_mode == "base_adamw_adamw_joint_alm":
+                    g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        clip_norm=args.retain_clip_norm,
+                    )
+                    g_f, neg_unlearn_loss_clean_pre, gn_f_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        clip_norm=args.forget_clip_norm,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    constraint = float((-args.tau) - neg_unlearn_loss_clean_pre.item())
+                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                    coef = args.forget_scale * float(lam_next)
+
+                    with torch.no_grad():
+                        apply_weight_decay_once(params, args.retain_lr, args.retain_weight_decay)
+                        manual_adamw_update(
+                            params, g_r, adam_state_r, args.retain_lr, args.retain_betas, args.adam_epsilon
+                        )
+                        manual_adamw_update(
+                            params, g_f, adam_state_f, args.forget_lr, args.forget_betas, args.adam_epsilon, alpha=-coef
+                        )
+                        lam.fill_(lam_next)
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((retain_loss + coef * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_clean_pre.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_clean_pre.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(gn_f_clean),
+                        "grad_norm_retain": float(gn_r_clean),
+                        "coef": float(coef),
+                    }
+                elif args.dual_mode == "base_adamw_alm_joint":
+                    joint_optimizer.zero_grad(set_to_none=True)
+                    for p in params:
+                        p.grad = None
+
+                    unlearn_loss_pre = forget_loss_closure()
+                    neg_unlearn_loss_pre = -unlearn_loss_pre
+                    retain_loss_pre = retain_loss_closure()
+                    base_loss = retain_loss_pre - (args.gamma * neg_unlearn_loss_pre)
+                    g = retain_loss_pre - args.tau
+                    g_pos = torch.relu(g)
+                    loss = base_loss + (lam.to(g_pos.dtype) * g_pos) + (0.5 * args.alm_rho * (g_pos ** 2))
+
+                    loss.backward()
+                    _clip_grad(params, args.clip_grad_norm)
+                    gn_joint = _global_grad_norm(params)
+                    joint_optimizer.step()
+                    joint_optimizer.zero_grad(set_to_none=True)
+
+                    if args.lagran_lambda_lr > 0.0:
+                        with torch.no_grad():
+                            lam.add_(g_pos.detach().to(dtype=lam.dtype) * args.lagran_lambda_lr)
+                            lam.clamp_(min=0.0)
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float(loss.detach().item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_pre.detach().item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_pre.detach().item()),
+                        "lambda": float(lam.item()),
+                        "constraint": float(g.detach().item()),
+                        "grad_norm_forget": float(gn_joint),
+                        "grad_norm_retain": float(gn_joint),
+                    }
+                elif args.dual_mode == "robust_unlearn_sam_alm":
+                    g_f, neg_unlearn_loss_clean_pre, neg_unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        rho=args.forget_rho,
+                        clip_norm=args.forget_clip_norm,
+                        perturb_sign=-1.0,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    unlearn_loss_adv = -neg_unlearn_loss_adv
+                    g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        clip_norm=args.retain_clip_norm,
+                    )
+                    constraint = float((-args.tau) - neg_unlearn_loss_adv.item())
+                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                    if args.alm_use_quadratic_grad:
+                        coeff_f = max(lam_next + args.alm_rho * constraint, 0.0)
+                    else:
+                        coeff_f = float(lam_next)
+
+                    for p, fg, rg in zip(params, g_f, g_r):
+                        if fg is None and rg is None:
+                            p.grad = None
+                            continue
+                        if rg is None:
+                            p.grad = (-coeff_f * fg).to(dtype=p.dtype, device=p.device)
+                        elif fg is None:
+                            p.grad = (args.retain_lambda * rg).to(dtype=p.dtype, device=p.device)
+                        else:
+                            p.grad = ((args.retain_lambda * rg) - (coeff_f * fg)).to(
+                                dtype=p.dtype, device=p.device
+                            )
+
+                    _clip_grad(params, args.clip_grad_norm)
+                    manual_sgd_step(params, args.retain_lr, args.retain_weight_decay)
+                    with torch.no_grad():
+                        lam.fill_(lam_next)
+                    for p in params:
+                        p.grad = None
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((args.retain_lambda * retain_loss + coeff_f * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_adv.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_clean_pre.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(gn_f_clean),
+                        "grad_norm_retain": float(gn_r_clean),
+                        "coef": float(coeff_f),
+                    }
+                elif args.dual_mode == "sharp_minmax_nomask_alm":
+                    g_r, retain_loss_clean_pre, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        rho=args.retain_rho,
+                        clip_norm=args.retain_clip_norm,
+                        perturb_sign=+1.0,
+                    )
+                    g_f, neg_unlearn_loss_clean_pre, neg_unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        rho=args.forget_rho,
+                        clip_norm=args.forget_clip_norm,
+                        perturb_sign=-1.0,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    unlearn_loss_adv = -neg_unlearn_loss_adv
+                    constraint = float((-args.tau) - neg_unlearn_loss_adv.item())
+                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                    alpha = float(lam_next)
+
+                    for p, gr, gf in zip(params, g_r, g_f):
+                        if gr is None and gf is None:
+                            p.grad = None
+                        elif gr is None:
+                            p.grad = (-alpha * gf).to(dtype=p.dtype, device=p.device)
+                        elif gf is None:
+                            p.grad = gr.to(dtype=p.dtype, device=p.device)
+                        else:
+                            p.grad = gr.add(gf, alpha=-alpha).to(dtype=p.dtype, device=p.device)
+
+                    _clip_grad(params, args.joint_clip_norm)
+                    joint_optimizer.step()
+                    joint_optimizer.zero_grad(set_to_none=True)
+                    with torch.no_grad():
+                        lam.fill_(lam_next)
+                    for p in params:
+                        p.grad = None
+
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((retain_loss + alpha * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_adv.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_adv.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(gn_f_clean),
+                        "grad_norm_retain": float(gn_r_clean),
+                        "coef": float(alpha),
+                    }
+                elif args.dual_mode == "uam_alm":
+                    g_f, neg_unlearn_loss_clean_pre, gn_f_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=neg_forget_loss_closure,
+                        clip_norm=args.forget_clip_norm,
+                    )
+                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                    constraint = float((-args.tau) - neg_unlearn_loss_clean_pre.item())
+                    lam_old = float(lam.item())
+                    lam_next = max(lam_old + args.lagran_lambda_lr * args.alm_rho * constraint, 0.0)
+                    k_val = max(lam_next + args.alm_rho * constraint, 0.0)
+
+                    g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
+                        params=params,
+                        loss_closure=retain_loss_closure,
+                        clip_norm=args.retain_clip_norm,
                     )
 
-                # retain SAM adversarial gradient
-                g_r, retain_loss_clean, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
-                    params=params,
-                    loss_closure=retain_loss_closure,
-                    rho=args.retain_rho,
-                    clip_norm=args.retain_clip_norm,
-                    perturb_sign=+1.0,
-                )
-
-                # forget SAM adversarial gradient
-                g_f, unlearn_loss_clean, unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
-                    params=params,
-                    loss_closure=forget_loss_closure,
-                    rho=args.forget_rho,
-                    clip_norm=args.forget_clip_norm,
-                    perturb_sign=+1.0,
-                )
-
-                # RMU에서는 forget loss도 minimize 대상
-                # constraint: Lf_adv <= tau
-                constraint = float(unlearn_loss_adv.item() - args.tau)
-                lam_next = max(
-                    float(lam.item()) + args.lagran_lambda_lr * constraint,
-                    0.0,
-                )
-                coef = 1.0 + float(lam_next)
-
-                with torch.no_grad():
-                    if args.weight_decay > 0.0:
-                        shrink = 1.0 - args.lr * args.weight_decay
-                        for p in params:
-                            p.mul_(shrink)
-
-                    for i, p in enumerate(params):
-                        gr = g_r[i]
-                        gf = g_f[i]
-
+                    gf_norm2 = 0.0
+                    dot_gf_gr = 0.0
+                    gr_norm2 = 0.0
+                    for gf, gr in zip(g_f, g_r):
+                        if gf is not None:
+                            gf_norm2 += float((gf.float() * gf.float()).sum().item())
+                        if gf is not None and gr is not None:
+                            dot_gf_gr += float((gf.float() * gr.float()).sum().item())
                         if gr is not None:
-                            d_r = _adamw_state_step_and_delta(
-                                p=p,
-                                g=gr,
-                                state=adam_state_r[p],
-                                lr=args.lr,
-                                betas=args.retain_betas,
-                                eps=args.adam_epsilon,
-                            )
-                            p.add_(d_r*2)
+                            gr_norm2 += float((gr.float() * gr.float()).sum().item())
 
-                        if coef > 0.0 and gf is not None:
-                            d_f = _adamw_state_step_and_delta(
-                                p=p,
-                                g=gf,
-                                state=adam_state_f[p],
-                                lr=args.lr,
-                                betas=args.forget_betas,
-                                eps=args.adam_epsilon,
-                            )
-                            p.add_(d_f, alpha=coef)
+                    gf_norm2_safe = max(gf_norm2, args.uam_eps)
+                    proj_coef = args.uam_gamma * (dot_gf_gr / gf_norm2_safe)
 
-                    lam.fill_(lam_next)
+                    for p, gf, gr in zip(params, g_f, g_r):
+                        if gr is None:
+                            p.grad = None
+                            continue
+                        if gf is None:
+                            g_uam = gr
+                        else:
+                            g_uam = gr - proj_coef * gf
+                        if gf is not None and k_val > 0.0:
+                            p.grad = (g_uam - k_val * gf).to(dtype=p.dtype, device=p.device)
+                        else:
+                            p.grad = g_uam.to(dtype=p.dtype, device=p.device)
 
-                with torch.no_grad():
-                    unlearn_loss, unlearn_inputs, updated_forget_activations = compute_rmu_forget_loss(
-                        updated_model=updated_model,
-                        updated_module=updated_module,
-                        tokenizer=tokenizer,
-                        unlearn_batch=unlearn_batch,
-                        control_vec=control_vec,
-                        max_length=max_length,
-                    )
+                    _clip_grad(params, args.clip_grad_norm)
+                    manual_sgd_step(params, args.retain_lr, args.uam_weight_decay)
+                    with torch.no_grad():
+                        lam.fill_(lam_next)
+                    for p in params:
+                        p.grad = None
 
-                    retain_loss, retain_inputs, updated_retain_activations, frozen_retain_activations = compute_rmu_retain_loss(
-                        updated_model=updated_model,
-                        frozen_model=frozen_model,
-                        updated_module=updated_module,
-                        frozen_module=frozen_module,
-                        tokenizer=tokenizer,
-                        retain_batch=retain_batch,
-                        alpha=args.alpha[topic_idx],
-                        max_length=512,
-                    )
+                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                    metrics = {
+                        "loss": float((retain_loss + (proj_coef + k_val) * unlearn_loss).item()),
+                        "unlearn_clean": float(unlearn_loss.item()),
+                        "unlearn_adv": float(unlearn_loss_clean_pre.item()),
+                        "retain_clean": float(retain_loss.item()),
+                        "retain_adv": float(retain_loss_clean_pre.item()),
+                        "lambda": float(lam.item()),
+                        "constraint": constraint,
+                        "grad_norm_forget": float(max(gf_norm2, 0.0) ** 0.5),
+                        "grad_norm_retain": float(max(gr_norm2, 0.0) ** 0.5),
+                        "coef": float(k_val),
+                        "uam_proj_coef": float(proj_coef),
+                    }
+                else:
+                    raise ValueError(f"Unhandled dual_mode={args.dual_mode}")
 
-                print(
-                    f"loss={(retain_loss + coef * unlearn_loss).item():.4g} | "
-                    f"unlearn_clean={unlearn_loss.item():.4g} | "
-                    f"unlearn_adv={unlearn_loss_adv.item():.4g} | "
-                    f"retain_clean={retain_loss.item():.4g} | "
-                    f"retain_adv={retain_loss_adv.item():.4g} | "
-                    f"lambda={lam.item():.4g} | "
-                    f"constraint=(Lf_adv-tau)={constraint:.4g} | "
-                    f"gn_f={gn_f_clean:.4g} | "
-                    f"gn_r={gn_r_clean:.4g}"
-                )
-
-
-                # print(f"loss: {loss.item():.4g} | unlearn_loss: {unlearn_loss.item():.4g} | retain_loss: {retain_loss.item():.4g} | param_change: {params[0].grad.abs().mean().item():.4g}")
+                print(format_step_log(args.dual_mode, metrics))
 
                 if args.use_wandb:
-                    wandb.log({
-                        "loss": (retain_loss + coef * unlearn_loss).item(),
-                        "unlearn_clean": unlearn_loss.item(),
-                        "unlearn_adv": unlearn_loss_adv.item(),
-                        "retain_clean": retain_loss.item(),
-                        "retain_adv": retain_loss_adv.item(),
-                        "lambda": lam.item(),
-                        "constraint": constraint,
-                        "grad_norm_forget": gn_f_clean,
-                        "grad_norm_retain": gn_r_clean,
-                    })
+                    wandb.log(
+                        {
+                            **metrics,
+                            "epoch": epoch,
+                            "step": idx,
+                            "topic_idx": topic_idx,
+                            "mode": args.dual_mode,
+                        }
+                    )
                 
                 # ======= Logging ======
                 if args.verbose:
+                    unlearn_inputs = tokenizer(
+                        unlearn_batch,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=max_length,
+                    ).to(updated_model.device)
+                    retain_inputs = tokenizer(
+                        retain_batch,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=512,
+                    ).to(updated_model.device)
+                    updated_forget_activations = forward_with_cache(
+                        updated_model, unlearn_inputs, module=updated_module, no_grad=True
+                    ).to(updated_model.device)
+                    updated_retain_activations = forward_with_cache(
+                        updated_model, retain_inputs, module=updated_module, no_grad=True
+                    ).to(updated_model.device)
+                    frozen_retain_activations = forward_with_cache(
+                        frozen_model, retain_inputs, module=frozen_module, no_grad=True
+                    ).to(updated_model.device)
                     frozen_forget_activations = forward_with_cache(frozen_model, unlearn_inputs, module=frozen_module, no_grad=True).to(updated_model.device)
                     unlearn_cosine= torch.nn.functional.cosine_similarity(updated_forget_activations, frozen_forget_activations, dim=-1).mean()
                     retain_cosine = torch.nn.functional.cosine_similarity(updated_retain_activations, frozen_retain_activations, dim=-1).mean()
@@ -453,6 +823,7 @@ def get_args():
     parser.add_argument("--max_len", type=int, default=2000)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_num_batches", type=int, default=80)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--layer_id", type=int, default=7, help="layer to unlearn")
     parser.add_argument("--layer_ids", type=str, default="5,6,7", help="update layers")
     parser.add_argument("--param_ids", type=str, default="6", help="update params")
@@ -461,10 +832,16 @@ def get_args():
 
     # ===== dual / ALM / SAM args =====
     parser.add_argument("--dual_mode", type=str, default="alm_sam_sam_joint2")
+    parser.add_argument("--method", type=str, default=None)
     parser.add_argument("--tau", type=float, default=1.0)
-    parser.add_argument("--lagran_lambda_init", type=float, default=0.0)
+    parser.add_argument("--lagran_lambda_init", type=float, default=1.0)
     parser.add_argument("--lagran_lambda_lr", type=float, default=1e-3)
+    parser.add_argument("--lam_init", type=float, default=None)
+    parser.add_argument("--lam_lr", type=float, default=None)
 
+    parser.add_argument("--retain_lr", type=float, default=None)
+    parser.add_argument("--forget_lr", type=float, default=None)
+    parser.add_argument("--joint_lr", type=float, default=None)
     parser.add_argument("--forget_rho", type=float, default=5e-3)
     parser.add_argument("--retain_rho", type=float, default=5e-3)
 
@@ -472,10 +849,30 @@ def get_args():
     parser.add_argument("--retain_betas", type=str, default="0.9,0.999")
 
     parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--retain_weight_decay", type=float, default=None)
+    parser.add_argument("--forget_weight_decay", type=float, default=None)
+    parser.add_argument("--joint_weight_decay", type=float, default=None)
+    parser.add_argument("--sgd_weight_decay", type=float, default=0.0)
+    parser.add_argument("--uam_weight_decay", type=float, default=0.0)
     parser.add_argument("--adam_epsilon", type=float, default=1e-8)
 
     parser.add_argument("--forget_clip_norm", type=float, default=0.0)
     parser.add_argument("--retain_clip_norm", type=float, default=0.0)
+    parser.add_argument("--clip_grad_norm", type=float, default=1.0)
+    parser.add_argument("--joint_clip_norm", type=float, default=0.0)
+    parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--forget_scale", type=float, default=1.0)
+    parser.add_argument("--retain_lambda", type=float, default=2.0)
+    parser.add_argument("--alm_rho", type=float, default=1.0)
+    parser.add_argument("--uam_gamma", type=float, default=2.0)
+    parser.add_argument("--uam_eps", type=float, default=1e-12)
+    parser.add_argument(
+        "--alm_use_quadratic_grad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--apply_wd_once", type=int, default=1)
+    parser.add_argument("--epoch", type=int, default=None)
     parser.add_argument("--use_wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="rmu-unlearn")
     parser.add_argument("--wandb_run_name", type=str, default=None)
@@ -490,6 +887,29 @@ def get_args():
 
     args.forget_betas = tuple(float(x) for x in args.forget_betas.split(","))
     args.retain_betas = tuple(float(x) for x in args.retain_betas.split(","))
+
+    if args.method is not None:
+        args.dual_mode = args.method
+    if args.lam_init is not None:
+        args.lagran_lambda_init = args.lam_init
+    if args.lam_lr is not None:
+        args.lagran_lambda_lr = args.lam_lr
+    if args.epoch is not None:
+        args.epochs = args.epoch
+
+    if args.retain_lr is None:
+        args.retain_lr = args.lr
+    if args.forget_lr is None:
+        args.forget_lr = args.lr
+    if args.joint_lr is None:
+        args.joint_lr = args.retain_lr
+
+    if args.retain_weight_decay is None:
+        args.retain_weight_decay = args.weight_decay
+    if args.forget_weight_decay is None:
+        args.forget_weight_decay = args.weight_decay
+    if args.joint_weight_decay is None:
+        args.joint_weight_decay = args.retain_weight_decay
 
     return args 
 
