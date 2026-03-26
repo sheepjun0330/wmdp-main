@@ -475,7 +475,7 @@ def run_rmu(
                     )
                     g_f, neg_unlearn_loss_clean_pre, gn_f_clean = clean_grad_no_step(
                         params=params,
-                        loss_closure=neg_forget_loss_closure,
+                        loss_closure=forget_loss_closure,
                         clip_norm=args.forget_clip_norm,
                     )
                     unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
@@ -489,7 +489,7 @@ def run_rmu(
                             params, g_r, adam_state_r, args.retain_lr, args.retain_betas, args.adam_epsilon
                         )
                         manual_adamw_update(
-                            params, g_f, adam_state_f, args.forget_lr, args.forget_betas, args.adam_epsilon, alpha=-coef
+                            params, g_f, adam_state_f, args.forget_lr, args.forget_betas, args.adam_epsilon, alpha=coef
                         )
                         lam.fill_(lam_next)
 

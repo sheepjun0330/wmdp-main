@@ -1064,7 +1064,7 @@ wheels = [
 
 [[package]]
 name = "peft"
-version = "0.18.1"
+version = "0.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
@@ -1078,9 +1078,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/48/147b3ea999560b40a34fd78724c7777aa9d18409c2250bdcaf9c4f2db7fc/peft-0.18.1.tar.gz", hash = "sha256:2dd0d6bfce936d1850e48aaddbd250941c5c02fc8ef3237cd8fd5aac35e0bae2", size = 635030, upload-time = "2026-01-09T13:08:01.136Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b6/aa/e5637dbdfc300e64444275b6b4d61d6b2ae9c199c8f4666f28b7058f3a6e/peft-0.10.0.tar.gz", hash = "sha256:36a7628c15f88d37abb26cfc74c22468f9037ee02e9c9b65de943cfe7c672049", size = 210126, upload-time = "2024-03-21T10:17:52.29Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b3/14/b4e3f574acf349ae6f61f9c000a77f97a3b315b4bb6ad03791e79ae4a568/peft-0.18.1-py3-none-any.whl", hash = "sha256:0bf06847a3551e3019fc58c440cffc9a6b73e6e2962c95b52e224f77bbdb50f1", size = 556960, upload-time = "2026-01-09T13:07:55.865Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/5d/758c00ba637bc850f35fff7fad442c470ac3d606fe586d881b0bed7ef5a5/peft-0.10.0-py3-none-any.whl", hash = "sha256:d5249c97e818d3e31f92553c73c2953acd0ec12649b8b749afff7152cbc86cbb", size = 199070, upload-time = "2024-03-21T10:17:35.652Z" },
 ]
 
 [[package]]
@@ -2051,6 +2051,7 @@ dependencies = [
     { name = "datasets" },
     { name = "lm-eval" },
     { name = "numpy" },
+    { name = "peft" },
     { name = "sentencepiece" },
     { name = "torch" },
     { name = "tqdm" },
@@ -2063,6 +2064,7 @@ requires-dist = [
     { name = "datasets", specifier = ">=2.17,<3" },
     { name = "lm-eval", specifier = "==0.4.2" },
     { name = "numpy", specifier = ">=1.26,<2" },
+    { name = "peft", specifier = "==0.10.0" },
     { name = "sentencepiece", specifier = ">=0.1.99,<1" },
     { name = "torch", specifier = "==2.1.2" },
     { name = "tqdm", specifier = ">=4.66,<5" },
