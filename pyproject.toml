@@ -8,6 +8,7 @@ dependencies = [
     "datasets>=2.17,<3",
     "lm-eval==0.4.2",
     "numpy>=1.26,<2",
+    "peft==0.10.0",
     "sentencepiece>=0.1.99,<1",
     "torch==2.1.2",
     "tqdm>=4.66,<5",
