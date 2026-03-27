@@ -16,20 +16,44 @@ fi
 
 MODEL="${MODEL:-HuggingFaceH4/zephyr-7b-beta}"
 GPU_ID="${GPU_ID:-0}"
-RETAIN_CORPORA="${RETAIN_CORPORA:-wikitext,wikitext}"
-FORGET_CORPORA="${FORGET_CORPORA:-bio-forget-corpus,cyber-forget-corpus}"
+DOMAIN="${DOMAIN:-bio}"
+
+case "${DOMAIN}" in
+  bio)
+    RETAIN_CORPORA_DEFAULT="wikitext"
+    FORGET_CORPORA_DEFAULT="bio-forget-corpus"
+    DOMAIN_TAG="bio"
+    ;;
+  cyber)
+    RETAIN_CORPORA_DEFAULT="wikitext"
+    FORGET_CORPORA_DEFAULT="cyber-forget-corpus"
+    DOMAIN_TAG="cyber"
+    ;;
+  both)
+    RETAIN_CORPORA_DEFAULT="wikitext,wikitext"
+    FORGET_CORPORA_DEFAULT="bio-forget-corpus,cyber-forget-corpus"
+    DOMAIN_TAG="bio_cyber"
+    ;;
+  *)
+    echo "[ERROR] DOMAIN must be one of: bio, cyber, both" >&2
+    exit 1
+    ;;
+esac
+
+RETAIN_CORPORA="${RETAIN_CORPORA:-${RETAIN_CORPORA_DEFAULT}}"
+FORGET_CORPORA="${FORGET_CORPORA:-${FORGET_CORPORA_DEFAULT}}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
-MAX_NUM_BATCHES="${MAX_NUM_BATCHES:-80}"
+MAX_NUM_BATCHES="${MAX_NUM_BATCHES:-150}"
 EPOCHS="${EPOCHS:-1}"
 LAYER_ID="${LAYER_ID:-7}"
 LAYER_IDS="${LAYER_IDS:-5,6,7}"
 PARAM_IDS="${PARAM_IDS:-6}"
-ALPHA="${ALPHA:-100,100}"
-STEERING_COEFFS="${STEERING_COEFFS:-20,20}"
+ALPHA="${ALPHA:-1200,1200}"
+STEERING_COEFFS="${STEERING_COEFFS:-6.5,6.5}"
 VERBOSE_FLAG="${VERBOSE_FLAG:-0}"
 USE_WANDB="${USE_WANDB:-0}"
 WANDB_PROJECT="${WANDB_PROJECT:-rmu-unlearn}"
-BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-${ROOT_DIR}/models/grid_search}"
+BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-${ROOT_DIR}/models/grid_search/${DOMAIN_TAG}}"
 ALM_ON="${ALM_ON:-1}"
 ALM_OFF_LAM_INIT="${ALM_OFF_LAM_INIT:-1}"
 RUN_EVAL="${RUN_EVAL:-1}"
@@ -42,13 +66,13 @@ DELETE_MODEL_AFTER_EVAL="${DELETE_MODEL_AFTER_EVAL:-1}"
 EVAL_LOG_DIRNAME="${EVAL_LOG_DIRNAME:-eval_logs}"
 EVAL_RESULTS_DIRNAME="${EVAL_RESULTS_DIRNAME:-eval_results}"
 
-FORGET_LRS=("${FORGET_LRS[@]:-1e-5}")
-RETAIN_LRS=("${RETAIN_LRS[@]:-1e-5}")
-JOINT_LRS=("${JOINT_LRS[@]:-1e-5}")
-FORGET_RHOS=("${FORGET_RHOS[@]:-1e-3}")
-RETAIN_RHOS=("${RETAIN_RHOS[@]:-1e-3}")
-TAUS=("${TAUS[@]:-10}")
-LAMBDA_LRS=("${LAMBDA_LRS[@]:-0}")
+FORGET_LRS=("${FORGET_LRS[@]:-5e-6}")
+RETAIN_LRS=("${RETAIN_LRS[@]:-5e-6}")
+JOINT_LRS=("${JOINT_LRS[@]:-5e-6}")
+FORGET_RHOS=("${FORGET_RHOS[@]:-1e-5}")
+RETAIN_RHOS=("${RETAIN_RHOS[@]:-1e-5}")
+TAUS=("${TAUS[@]:-0.01}")
+LAMBDA_LRS=("${LAMBDA_LRS[@]:-1e-3}")
 LAM_INITS=("${LAM_INITS[@]:-1}")
 ALM_RHOS=("${ALM_RHOS[@]:-1.0}")
 FORGET_SCALES=("${FORGET_SCALES[@]:-1.0}")
@@ -57,7 +81,7 @@ UAM_GAMMAS=("${UAM_GAMMAS[@]:-2.0}")
 UAM_EPSS=("${UAM_EPSS[@]:-1e-12}")
 WEIGHT_DECAYS=("${WEIGHT_DECAYS[@]:-0.0}")
 JOINT_WEIGHT_DECAYS=("${JOINT_WEIGHT_DECAYS[@]:-0.0}")
-SEEDS=("${SEEDS[@]:-0}")
+SEEDS=("${SEEDS[@]:-42}")
 
 if [[ "${ALM_ON}" == "0" ]]; then
   TAUS=(0)
