@@ -12,6 +12,7 @@ LM_EVAL_BIN="${LM_EVAL_BIN:-${ROOT_DIR}/.venv/bin/lm-eval}"
 DTYPE="${DTYPE:-auto}"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/logs}"
 RESULTS_DIR="${RESULTS_DIR:-${ROOT_DIR}/eval_results}"
+SKIP_EXISTING_RESULTS="${SKIP_EXISTING_RESULTS:-1}"
 
 DEFAULT_MODELS=(
   "${ROOT_DIR}/models/zephyr_rmu_alm_sam_sam_5e-6"
@@ -63,6 +64,11 @@ for MODEL_PATH in "${MODELS[@]}"; do
   echo "Log file  : ${LOG_FILE}"
   echo "JSON file : ${RESULT_PATH}"
   echo "======================================"
+
+  if [[ "${SKIP_EXISTING_RESULTS}" == "1" ]] && [[ -s "${RESULT_PATH}" ]]; then
+    echo "[INFO] Skip existing eval result: ${RESULT_PATH}"
+    continue
+  fi
 
   CUDA_VISIBLE_DEVICES="${GPU_ID}" \
   "${LM_EVAL_BIN}" \

@@ -56,6 +56,8 @@ WANDB_PROJECT="${WANDB_PROJECT:-rmu-unlearn}"
 BASE_OUTPUT_DIR="${BASE_OUTPUT_DIR:-${ROOT_DIR}/models/grid_search/${DOMAIN_TAG}}"
 ALM_ON="${ALM_ON:-1}"
 ALM_OFF_LAM_INIT="${ALM_OFF_LAM_INIT:-1}"
+ALM_OFF_LAM_INITS=("${ALM_OFF_LAM_INITS[@]:-${ALM_OFF_LAM_INIT}}")
+ALM_OFF_KEEP_RHO="${ALM_OFF_KEEP_RHO:-0}"
 RUN_EVAL="${RUN_EVAL:-1}"
 EVAL_SCRIPT="${EVAL_SCRIPT:-${ROOT_DIR}/eval.sh}"
 EVAL_GPU_ID="${EVAL_GPU_ID:-${GPU_ID}}"
@@ -65,6 +67,8 @@ EVAL_TASKS="${EVAL_TASKS:-mmlu,wmdp}"
 DELETE_MODEL_AFTER_EVAL="${DELETE_MODEL_AFTER_EVAL:-1}"
 EVAL_LOG_DIRNAME="${EVAL_LOG_DIRNAME:-eval_logs}"
 EVAL_RESULTS_DIRNAME="${EVAL_RESULTS_DIRNAME:-eval_results}"
+SKIP_EXISTING_RESULTS="${SKIP_EXISTING_RESULTS:-1}"
+SKIP_EXISTING_MODELS="${SKIP_EXISTING_MODELS:-1}"
 
 FORGET_LRS=("${FORGET_LRS[@]:-5e-6}")
 RETAIN_LRS=("${RETAIN_LRS[@]:-5e-6}")
@@ -82,23 +86,44 @@ UAM_EPSS=("${UAM_EPSS[@]:-1e-12}")
 WEIGHT_DECAYS=("${WEIGHT_DECAYS[@]:-0.0}")
 JOINT_WEIGHT_DECAYS=("${JOINT_WEIGHT_DECAYS[@]:-0.0}")
 SEEDS=("${SEEDS[@]:-42}")
+LOCK_RHOS="${LOCK_RHOS:-0}"
 
 if [[ "${ALM_ON}" == "0" ]]; then
   TAUS=(0)
   LAMBDA_LRS=(0)
-  LAM_INITS=("${ALM_OFF_LAM_INIT}")
-  ALM_RHOS=(0.0)
+  LAM_INITS=("${ALM_OFF_LAM_INITS[@]}")
+  if [[ "${ALM_OFF_KEEP_RHO}" != "1" ]]; then
+    ALM_RHOS=(0.0)
+  fi
 fi
 
 if [[ "${ALM_ON}" == "1" ]]; then
   ALM_TAG="alm_on"
+  ALM_DIR="ALM_ON"
 else
-  ALM_OFF_LAM_TAG="${ALM_OFF_LAM_INIT//./p}"
-  ALM_TAG="alm_off_fix${ALM_OFF_LAM_TAG}"
+  if [[ "${#ALM_OFF_LAM_INITS[@]}" -eq 1 ]]; then
+    ALM_OFF_LAM_TAG="${ALM_OFF_LAM_INITS[0]//./p}"
+    ALM_TAG="alm_off_fix${ALM_OFF_LAM_TAG}"
+  else
+    ALM_TAG="alm_off_sweep"
+  fi
+  ALM_DIR="ALM_OFF"
 fi
 
 mkdir -p "${BASE_OUTPUT_DIR}"
 export CUDA_VISIBLE_DEVICES="${GPU_ID}"
+
+is_nonempty_file() {
+  local path="$1"
+  [[ -s "${path}" ]]
+}
+
+has_saved_model() {
+  local model_dir="$1"
+
+  [[ -f "${model_dir}/config.json" ]] || return 1
+  [[ -n "$(find "${model_dir}" -maxdepth 1 -type f \( -name '*.safetensors' -o -name 'pytorch_model*.bin' \) -print -quit 2>/dev/null)" ]]
+}
 
 for seed in "${SEEDS[@]}"; do
   for f_lr in "${FORGET_LRS[@]}"; do
@@ -106,7 +131,12 @@ for seed in "${SEEDS[@]}"; do
       for j_lr in "${JOINT_LRS[@]}"; do
         for tau in "${TAUS[@]}"; do
           for f_rho in "${FORGET_RHOS[@]}"; do
-            for r_rho in "${RETAIN_RHOS[@]}"; do
+            if [[ "${LOCK_RHOS}" == "1" ]]; then
+              r_rho_values=("${f_rho}")
+            else
+              r_rho_values=("${RETAIN_RHOS[@]}")
+            fi
+            for r_rho in "${r_rho_values[@]}"; do
               for lam_lr in "${LAMBDA_LRS[@]}"; do
                 for lam_init in "${LAM_INITS[@]}"; do
                   for alm_rho in "${ALM_RHOS[@]}"; do
@@ -118,23 +148,40 @@ for seed in "${SEEDS[@]}"; do
                               for joint_wd in "${JOINT_WEIGHT_DECAYS[@]}"; do
                                 RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_fscale${forget_scale}_rlam${retain_lambda}_ugamma${uam_gamma}_ueps${uam_eps}_wd${wd}_jwd${joint_wd}"
                                 METHOD_OUTPUT_DIR="${BASE_OUTPUT_DIR}/${METHOD}"
-                                MODEL_OUTPUT_DIR="${METHOD_OUTPUT_DIR}/${RUN_NAME}"
-                                EVAL_LOG_DIR="${METHOD_OUTPUT_DIR}/${EVAL_LOG_DIRNAME}"
-                                EVAL_RESULTS_DIR="${METHOD_OUTPUT_DIR}/${EVAL_RESULTS_DIRNAME}"
+                                ALM_OUTPUT_DIR="${METHOD_OUTPUT_DIR}/${ALM_DIR}"
+                                MODEL_OUTPUT_DIR="${ALM_OUTPUT_DIR}/${RUN_NAME}"
+                                EVAL_LOG_DIR="${ALM_OUTPUT_DIR}/${EVAL_LOG_DIRNAME}"
+                                EVAL_RESULTS_DIR="${ALM_OUTPUT_DIR}/${EVAL_RESULTS_DIRNAME}"
+                                EVAL_LOG_FILE="${EVAL_LOG_DIR}/lmeval_${RUN_NAME}.log"
+                                EVAL_RESULT_FILE="${EVAL_RESULTS_DIR}/${RUN_NAME}.json"
+
+                                mkdir -p "${ALM_OUTPUT_DIR}" "${EVAL_LOG_DIR}" "${EVAL_RESULTS_DIR}"
 
                                 echo "================================================="
                                 echo "RUN ${RUN_NAME}"
                                 echo "METHOD     = ${METHOD}"
                                 echo "ALM_ON     = ${ALM_ON}"
+                                echo "ALM_DIR    = ${ALM_DIR}"
                                 if [[ "${ALM_ON}" == "0" ]]; then
                                   echo "ALM_MODE   = fixed_forget_coeff"
                                   echo "FIXED_COEF = ${ALM_OFF_LAM_INIT}"
                                 fi
                                 echo "GPU        = ${GPU_ID}"
                                 echo "MODEL_DIR  = ${MODEL_OUTPUT_DIR}"
-                                echo "EVAL_LOGS  = ${EVAL_LOG_DIR}"
-                                echo "EVAL_JSON  = ${EVAL_RESULTS_DIR}"
+                                echo "EVAL_LOG   = ${EVAL_LOG_FILE}"
+                                echo "EVAL_JSON  = ${EVAL_RESULT_FILE}"
                                 echo "================================================="
+
+                                if [[ "${SKIP_EXISTING_RESULTS}" == "1" ]] && is_nonempty_file "${EVAL_RESULT_FILE}"; then
+                                  echo "[INFO] Skip completed run: ${RUN_NAME}"
+                                  continue
+                                fi
+
+                                should_run_train=1
+                                if [[ "${SKIP_EXISTING_MODELS}" == "1" ]] && has_saved_model "${MODEL_OUTPUT_DIR}"; then
+                                  should_run_train=0
+                                  echo "[INFO] Reusing existing model dir: ${MODEL_OUTPUT_DIR}"
+                                fi
 
                                 cmd=(
                                   "${PYTHON_BIN}" -m rmu.unlearn
@@ -178,7 +225,16 @@ for seed in "${SEEDS[@]}"; do
                                   cmd+=(--use_wandb --wandb_project "${WANDB_PROJECT}" --wandb_run_name "${RUN_NAME}")
                                 fi
 
-                                if "${cmd[@]}"; then
+                                train_status=0
+                                if [[ "${should_run_train}" == "1" ]]; then
+                                  if "${cmd[@]}"; then
+                                    train_status=0
+                                  else
+                                    train_status=$?
+                                  fi
+                                fi
+
+                                if [[ ${train_status} -eq 0 ]]; then
                                   if [[ "${RUN_EVAL}" == "1" ]]; then
                                     echo "[INFO] Running eval for ${RUN_NAME}"
                                     GPU_ID="${EVAL_GPU_ID}" \

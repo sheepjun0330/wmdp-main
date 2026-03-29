@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 METHOD="alm_sam_adamw_joint"
 FORGET_LRS=(5e-6 1e-5)
-RETAIN_LRS=(5e-6 1e-5)
+RETAIN_LRS=("${FORGET_LRS[@]}")
 JOINT_LRS=(5e-6)
 FORGET_RHOS=(1e-6 1e-5 1e-4)
-RETAIN_RHOS=(1e-6 1e-5 1e-4)
-TAUS=(0.001 0.01 0.1)
+RETAIN_RHOS=("${FORGET_RHOS[@]}")
+TAUS=(0.01)
 LAMBDA_LRS=(1e-4 1e-3 1e-2)
 LAM_INITS=(1)
 ALM_RHOS=(1.0)

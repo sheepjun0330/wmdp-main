@@ -7,10 +7,10 @@ METHOD="alm_sam_sam_joint2"
 # Override any of these from the shell if needed, e.g.
 # HF_TOKEN=... GPU_ID=5 MAX_NUM_BATCHES=1 bash scripts/test_alm_sam_sam_joint2.sh
 FORGET_LRS=("${FORGET_LRS[@]:-1e-5}")
-RETAIN_LRS=("${RETAIN_LRS[@]:-1e-5}")
+RETAIN_LRS=("${FORGET_LRS[@]}")
 JOINT_LRS=("${JOINT_LRS[@]:-1e-5}")
 FORGET_RHOS=("${FORGET_RHOS[@]:-1e-3}")
-RETAIN_RHOS=("${RETAIN_RHOS[@]:-1e-3}")
+RETAIN_RHOS=("${FORGET_RHOS[@]}")
 TAUS=("${TAUS[@]:-10}")
 LAMBDA_LRS=("${LAMBDA_LRS[@]:-0}")
 LAM_INITS=("${LAM_INITS[@]:-1}")

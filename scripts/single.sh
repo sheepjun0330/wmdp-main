@@ -11,6 +11,26 @@ TASKS="${TASKS:-mmlu,wmdp}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-4}"
 RUN_EVAL="${RUN_EVAL:-1}"
 DOMAIN="${DOMAIN:-bio}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-HuggingFaceH4/zephyr-7b-beta}"
+MAX_NUM_BATCHES="${MAX_NUM_BATCHES:-150}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
+STEERING_COEFFS="${STEERING_COEFFS:-6.5,6.5}"
+ALPHA="${ALPHA:-1200,1200}"
+LR="${LR:-5e-6}"
+SEED="${SEED:-42}"
+DUAL_MODE="${DUAL_MODE:-alm_sam_sam_joint2}"
+TAU="${TAU:-0.01}"
+LAGRAN_LAMBDA_INIT="${LAGRAN_LAMBDA_INIT:-1.0}"
+LAGRAN_LAMBDA_LR="${LAGRAN_LAMBDA_LR:-1e-3}"
+FORGET_RHO="${FORGET_RHO:-1e-5}"
+RETAIN_RHO="${RETAIN_RHO:-1e-5}"
+FORGET_LR="${FORGET_LR:-}"
+RETAIN_LR="${RETAIN_LR:-}"
+JOINT_LR="${JOINT_LR:-}"
+ALM_RHO="${ALM_RHO:-}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-}"
+JOINT_WEIGHT_DECAY="${JOINT_WEIGHT_DECAY:-}"
+USE_WANDB="${USE_WANDB:-1}"
 
 case "${DOMAIN}" in
   bio)
@@ -37,30 +57,55 @@ esac
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/models/new/zephyr_rmu_alm_sam_sam_1e-5_${DOMAIN_TAG}}"
 EVAL_LOG_DIR="${EVAL_LOG_DIR:-${ROOT_DIR}/models/new/eval_logs}"
 EVAL_RESULTS_DIR="${EVAL_RESULTS_DIR:-${ROOT_DIR}/models/new/eval_results}"
+WANDB_PROJECT="${WANDB_PROJECT:-rmu-unlearn}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-zephyr_rmu_alm_sam_sam1e-5_${DOMAIN_TAG}_tau${TAU}}"
 
 mkdir -p "$(dirname "${OUTPUT_DIR}")" "${EVAL_LOG_DIR}" "${EVAL_RESULTS_DIR}"
 
-CUDA_VISIBLE_DEVICES="${TRAIN_GPU_ID}" uv run python -m rmu.unlearn \
-  --model_name_or_path HuggingFaceH4/zephyr-7b-beta \
-  --max_num_batches 150 \
-  --batch_size 4 \
-  --retain_corpora "${RETAIN_CORPORA:-${RETAIN_CORPORA_DEFAULT}}" \
-  --forget_corpora "${FORGET_CORPORA:-${FORGET_CORPORA_DEFAULT}}" \
-  --steering_coeffs 6.5,6.5 \
-  --alpha 1200,1200 \
-  --lr 5e-6 \
-  --seed 42 \
-  --output_dir "${OUTPUT_DIR}" \
-  --verbose \
-  --dual_mode alm_sam_sam_joint2 \
-  --tau 0.01 \
-  --lagran_lambda_init 1.0 \
-  --lagran_lambda_lr 1e-3 \
-  --forget_rho 1e-5 \
-  --retain_rho 1e-5 \
-  --use_wandb \
-  --wandb_project rmu-unlearn \
-  --wandb_run_name "zephyr_rmu_alm_sam_sam1e-5_${DOMAIN_TAG}_tau0.01"
+cmd=(
+  uv run python -m rmu.unlearn
+  --model_name_or_path "${MODEL_NAME_OR_PATH}"
+  --max_num_batches "${MAX_NUM_BATCHES}"
+  --batch_size "${BATCH_SIZE}"
+  --retain_corpora "${RETAIN_CORPORA:-${RETAIN_CORPORA_DEFAULT}}"
+  --forget_corpora "${FORGET_CORPORA:-${FORGET_CORPORA_DEFAULT}}"
+  --steering_coeffs "${STEERING_COEFFS}"
+  --alpha "${ALPHA}"
+  --lr "${LR}"
+  --seed "${SEED}"
+  --output_dir "${OUTPUT_DIR}"
+  --verbose
+  --dual_mode "${DUAL_MODE}"
+  --tau "${TAU}"
+  --lagran_lambda_init "${LAGRAN_LAMBDA_INIT}"
+  --lagran_lambda_lr "${LAGRAN_LAMBDA_LR}"
+  --forget_rho "${FORGET_RHO}"
+  --retain_rho "${RETAIN_RHO}"
+)
+
+if [[ -n "${FORGET_LR}" ]]; then
+  cmd+=(--forget_lr "${FORGET_LR}")
+fi
+if [[ -n "${RETAIN_LR}" ]]; then
+  cmd+=(--retain_lr "${RETAIN_LR}")
+fi
+if [[ -n "${JOINT_LR}" ]]; then
+  cmd+=(--joint_lr "${JOINT_LR}")
+fi
+if [[ -n "${ALM_RHO}" ]]; then
+  cmd+=(--alm_rho "${ALM_RHO}")
+fi
+if [[ -n "${WEIGHT_DECAY}" ]]; then
+  cmd+=(--weight_decay "${WEIGHT_DECAY}" --retain_weight_decay "${WEIGHT_DECAY}" --forget_weight_decay "${WEIGHT_DECAY}")
+fi
+if [[ -n "${JOINT_WEIGHT_DECAY}" ]]; then
+  cmd+=(--joint_weight_decay "${JOINT_WEIGHT_DECAY}")
+fi
+if [[ "${USE_WANDB}" == "1" ]]; then
+  cmd+=(--use_wandb --wandb_project "${WANDB_PROJECT}" --wandb_run_name "${WANDB_RUN_NAME}")
+fi
+
+CUDA_VISIBLE_DEVICES="${TRAIN_GPU_ID}" "${cmd[@]}"
 
 if [[ "${RUN_EVAL}" == "1" ]]; then
   GPU_ID="${EVAL_GPU_ID}" \

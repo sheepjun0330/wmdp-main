@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 METHOD="robust_unlearn_sam_alm"
-FORGET_LRS=(5e-6 1e-5)
-RETAIN_LRS=("${FORGET_LRS[@]}")
+ALM_ON=0
+ALM_OFF_LAM_INITS=(1.0 2.5)
+FORGET_LRS=(5e-6)
+RETAIN_LRS=(2.5e-6 5e-6 1e-5)
 JOINT_LRS=(5e-6)
-FORGET_RHOS=(1e-6 1e-5 1e-4)
+FORGET_RHOS=(1e-3 1e-2 1e-1)
 RETAIN_RHOS=("${FORGET_RHOS[@]}")
-TAUS=(0.01)
-LAMBDA_LRS=(1e-4 1e-3)
-LAM_INITS=(1)
-ALM_RHOS=(0.5 1.0 2.0)
-RETAIN_LAMBDAS=(2.0 4.0)
+LOCK_RHOS=1
+RETAIN_LAMBDAS=(2.0)
 SEEDS=(42)
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_grid_common.sh"
