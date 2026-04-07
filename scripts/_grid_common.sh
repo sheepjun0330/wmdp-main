@@ -85,10 +85,7 @@ LAM_INITS=("${LAM_INITS[@]:-1}")
 ALM_RHOS=("${ALM_RHOS[@]:-1.0}")
 FORGET_SCALES=("${FORGET_SCALES[@]:-1.0}")
 RETAIN_LAMBDAS=("${RETAIN_LAMBDAS[@]:-2.0}")
-UAM_GAMMAS=("${UAM_GAMMAS[@]:-2.0}")
-UAM_EPSS=("${UAM_EPSS[@]:-1e-12}")
 WEIGHT_DECAYS=("${WEIGHT_DECAYS[@]:-0.0}")
-JOINT_WEIGHT_DECAYS=("${JOINT_WEIGHT_DECAYS[@]:-0.0}")
 SEEDS=("${SEEDS[@]:-42}")
 LOCK_RHOS="${LOCK_RHOS:-0}"
 LOCK_LRS="${LOCK_LRS:-0}"
@@ -164,11 +161,8 @@ for seed in "${SEEDS[@]}"; do
                       for retain_lambda in "${RETAIN_LAMBDAS[@]}"; do
                         for gamma in "${GAMMAS[@]}"; do
                           for beta in "${BETAS[@]}"; do
-                            for uam_gamma in "${UAM_GAMMAS[@]}"; do
-                              for uam_eps in "${UAM_EPSS[@]}"; do
-                                for wd in "${WEIGHT_DECAYS[@]}"; do
-                                  for joint_wd in "${JOINT_WEIGHT_DECAYS[@]}"; do
-                                    RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_beta${beta}_gamma${gamma}_fscale${forget_scale}_rlam${retain_lambda}_ugamma${uam_gamma}_ueps${uam_eps}_wd${wd}_jwd${joint_wd}"
+                            for wd in "${WEIGHT_DECAYS[@]}"; do
+                              RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_beta${beta}_gamma${gamma}_fscale${forget_scale}_rlam${retain_lambda}_wd${wd}"
                                 METHOD_OUTPUT_DIR="${BASE_OUTPUT_DIR}/${METHOD}"
                                 ALM_OUTPUT_DIR="${METHOD_OUTPUT_DIR}/${ALM_DIR}"
                                 MODEL_OUTPUT_DIR="${ALM_OUTPUT_DIR}/${RUN_NAME}"
@@ -237,12 +231,7 @@ for seed in "${SEEDS[@]}"; do
                                   --alm_rho "${alm_rho}"
                                   --forget_scale "${forget_scale}"
                                   --retain_lambda "${retain_lambda}"
-                                  --uam_gamma "${uam_gamma}"
-                                  --uam_eps "${uam_eps}"
                                   --weight_decay "${wd}"
-                                  --retain_weight_decay "${wd}"
-                                  --forget_weight_decay "${wd}"
-                                  --joint_weight_decay "${joint_wd}"
                                   --clip_grad_norm "${CLIP_GRAD_NORM}"
                                 )
 
@@ -283,9 +272,6 @@ for seed in "${SEEDS[@]}"; do
                                 else
                                   echo "[WARN] Failed: ${RUN_NAME} (continue)"
                                 fi
-                                  done
-                                done
-                              done
                             done
                           done
                         done

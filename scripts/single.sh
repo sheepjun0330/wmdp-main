@@ -16,20 +16,22 @@ MAX_NUM_BATCHES="${MAX_NUM_BATCHES:-150}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 STEERING_COEFFS="${STEERING_COEFFS:-6.5,6.5}"
 ALPHA="${ALPHA:-1200,1200}"
-LR="${LR:-5e-6}"
+BETA="${BETA:-0.1}"
+GAMMA="${GAMMA:-1.0}"
 SEED="${SEED:-42}"
 DUAL_MODE="${DUAL_MODE:-alm_sam_sam_joint2}"
 TAU="${TAU:-0.01}"
 LAGRAN_LAMBDA_INIT="${LAGRAN_LAMBDA_INIT:-1.0}"
 LAGRAN_LAMBDA_LR="${LAGRAN_LAMBDA_LR:-1e-3}"
-FORGET_RHO="${FORGET_RHO:-1e-5}"
-RETAIN_RHO="${RETAIN_RHO:-1e-5}"
-FORGET_LR="${FORGET_LR:-}"
-RETAIN_LR="${RETAIN_LR:-}"
-JOINT_LR="${JOINT_LR:-}"
-ALM_RHO="${ALM_RHO:-}"
-WEIGHT_DECAY="${WEIGHT_DECAY:-}"
-JOINT_WEIGHT_DECAY="${JOINT_WEIGHT_DECAY:-}"
+FORGET_RHO="${FORGET_RHO:-1e-4}"
+RETAIN_RHO="${RETAIN_RHO:-1e-4}"
+FORGET_LR="${FORGET_LR:-5e-6}"
+RETAIN_LR="${RETAIN_LR:-1e-5}"
+JOINT_LR="${JOINT_LR:-5e-6}"
+ALM_RHO="${ALM_RHO:-1.0}"
+FORGET_SCALE="${FORGET_SCALE:-1.0}"
+RETAIN_LAMBDA="${RETAIN_LAMBDA:-2.0}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 USE_WANDB="${USE_WANDB:-1}"
 
 case "${DOMAIN}" in
@@ -54,11 +56,12 @@ case "${DOMAIN}" in
     ;;
 esac
 
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/models/new2/zephyr_rmu_alm_sam_sam_1e-5_${DOMAIN_TAG}}"
+RUN_NAME="${RUN_NAME:-alm_sam_sam_joint2_alm_on_seed42_flr5e-6_rlr1e-5_jlr5e-6_frho1e-4_rrho1e-4_tau0.01_llr1e-3_initL1_almrho1.0_fscale1.0_rlam2.0_wd0.0}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/models/new2/${RUN_NAME}}"
 EVAL_LOG_DIR="${EVAL_LOG_DIR:-${ROOT_DIR}/models/new2/eval_logs}"
 EVAL_RESULTS_DIR="${EVAL_RESULTS_DIR:-${ROOT_DIR}/models/new2/eval_results}"
 WANDB_PROJECT="${WANDB_PROJECT:-rmu-unlearn}"
-WANDB_RUN_NAME="${WANDB_RUN_NAME:-zephyr_rmu_alm_sam_sam1e-5_${DOMAIN_TAG}_tau${TAU}}"
+WANDB_RUN_NAME="${WANDB_RUN_NAME:-${RUN_NAME}}"
 
 mkdir -p "$(dirname "${OUTPUT_DIR}")" "${EVAL_LOG_DIR}" "${EVAL_RESULTS_DIR}"
 
@@ -71,7 +74,8 @@ cmd=(
   --forget_corpora "${FORGET_CORPORA:-${FORGET_CORPORA_DEFAULT}}"
   --steering_coeffs "${STEERING_COEFFS}"
   --alpha "${ALPHA}"
-  --lr "${LR}"
+  --beta "${BETA}"
+  --gamma "${GAMMA}"
   --seed "${SEED}"
   --output_dir "${OUTPUT_DIR}"
   --verbose
@@ -95,11 +99,14 @@ fi
 if [[ -n "${ALM_RHO}" ]]; then
   cmd+=(--alm_rho "${ALM_RHO}")
 fi
-if [[ -n "${WEIGHT_DECAY}" ]]; then
-  cmd+=(--weight_decay "${WEIGHT_DECAY}" --retain_weight_decay "${WEIGHT_DECAY}" --forget_weight_decay "${WEIGHT_DECAY}")
+if [[ -n "${FORGET_SCALE}" ]]; then
+  cmd+=(--forget_scale "${FORGET_SCALE}")
 fi
-if [[ -n "${JOINT_WEIGHT_DECAY}" ]]; then
-  cmd+=(--joint_weight_decay "${JOINT_WEIGHT_DECAY}")
+if [[ -n "${RETAIN_LAMBDA}" ]]; then
+  cmd+=(--retain_lambda "${RETAIN_LAMBDA}")
+fi
+if [[ -n "${WEIGHT_DECAY}" ]]; then
+  cmd+=(--weight_decay "${WEIGHT_DECAY}")
 fi
 if [[ "${USE_WANDB}" == "1" ]]; then
   cmd+=(--use_wandb --wandb_project "${WANDB_PROJECT}" --wandb_run_name "${WANDB_RUN_NAME}")

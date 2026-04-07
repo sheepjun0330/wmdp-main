@@ -15,7 +15,9 @@ CUDA_VISIBLE_DEVICES=4,5 uv run python -m rmu.unlearn \
   --forget_corpora bio-forget-corpus \
   --steering_coeffs 6.5,6.5 \
   --alpha 1200,1200 \
-  --lr 5e-6 \
+  --forget_lr 5e-6 \
+  --retain_lr 5e-6 \
+  --joint_lr 5e-6 \
   --seed 42 \
   --output_dir models/zephyr_rmu_alm_sam_sam_1e-5 \
   --verbose \

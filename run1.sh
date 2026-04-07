@@ -22,7 +22,7 @@ ALPHA="100,100"
 METHOD="alm_sam_sam_joint2"
 
 # =========================================
-# Fixed params (except LR)
+# Fixed params (except optimizer LRs)
 # =========================================
 RHO=1e-2
 LAM_INIT=1
@@ -80,7 +80,9 @@ for LR in "${LRS[@]}"; do
         --lagran_lambda_init "${LAM_INIT}" \
         --lagran_lambda_lr "${LAM_LR}" \
         \
-        --lr "${LR}" \
+        --forget_lr "${LR}" \
+        --retain_lr "${LR}" \
+        --joint_lr "${LR}" \
         --retain_rho "${RHO}" \
         --forget_rho "${RHO}" \
         \
