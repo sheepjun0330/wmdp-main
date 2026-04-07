@@ -1,12 +1,36 @@
 #!/usr/bin/env bash
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 METHOD="base_adamw_adamw_joint_alm"
-FORGET_LRS=(5e-6 1e-5)
-RETAIN_LRS=("${FORGET_LRS[@]}")
-JOINT_LRS=(5e-6 1e-5)
-TAUS=(0.01)
-LAMBDA_LRS=(1e-4 1e-3)
-LAM_INITS=(1)
-FORGET_SCALES=(0.5 1.0 2.0)
-ALM_RHOS=(1.0)
+DOMAIN="${DOMAIN:-bio}"
+
+ALM_ON=0
+ALM_OFF_LAM_INITS=(1 2.5)
+
+FORGET_LRS=(5e-6 7.5e-6)
+RETAIN_LRS=(5e-6 7.5e-6)
+LOCK_LRS=0
+JOINT_LRS=(5e-6)
+USE_JOINT_LR_AXIS=0
+
+FORGET_RHOS=(1e-5)
+RETAIN_RHOS=(1e-5)
+USE_RETAIN_RHO_AXIS=0
+
+FORGET_SCALES=(1.0 1.5)
+
+case "${DOMAIN}" in
+  bio)
+    BASE_OUTPUT_DIR="${ROOT_DIR}/models/grid_search_detail/${DOMAIN}"
+    ;;
+  cyber|both)
+    BASE_OUTPUT_DIR="${ROOT_DIR}/models/grid_search_detail/${DOMAIN}"
+    ;;
+  *)
+    echo "[ERROR] DOMAIN must be one of: bio, cyber, both" >&2
+    exit 1
+    ;;
+esac
+
 SEEDS=(42)
-source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/_grid_common.sh"
+source "${SCRIPT_DIR}/_grid_common.sh"

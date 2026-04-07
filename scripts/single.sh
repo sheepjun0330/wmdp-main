@@ -54,9 +54,9 @@ case "${DOMAIN}" in
     ;;
 esac
 
-OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/models/new/zephyr_rmu_alm_sam_sam_1e-5_${DOMAIN_TAG}}"
-EVAL_LOG_DIR="${EVAL_LOG_DIR:-${ROOT_DIR}/models/new/eval_logs}"
-EVAL_RESULTS_DIR="${EVAL_RESULTS_DIR:-${ROOT_DIR}/models/new/eval_results}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ROOT_DIR}/models/new2/zephyr_rmu_alm_sam_sam_1e-5_${DOMAIN_TAG}}"
+EVAL_LOG_DIR="${EVAL_LOG_DIR:-${ROOT_DIR}/models/new2/eval_logs}"
+EVAL_RESULTS_DIR="${EVAL_RESULTS_DIR:-${ROOT_DIR}/models/new2/eval_results}"
 WANDB_PROJECT="${WANDB_PROJECT:-rmu-unlearn}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-zephyr_rmu_alm_sam_sam1e-5_${DOMAIN_TAG}_tau${TAU}}"
 

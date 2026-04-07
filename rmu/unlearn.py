@@ -29,6 +29,37 @@ def _clip_grad(params, max_norm: float):
 
 
 @torch.no_grad()
+def _grad_lists_cosine(a_list, b_list):
+    dot = 0.0
+    a_sq = 0.0
+    b_sq = 0.0
+    for a, b in zip(a_list, b_list):
+        if a is None or b is None:
+            continue
+        af = a.detach().float()
+        bf = b.detach().float()
+        dot += torch.sum(af * bf).item()
+        a_sq += torch.sum(af * af).item()
+        b_sq += torch.sum(bf * bf).item()
+    if a_sq <= 0.0 or b_sq <= 0.0:
+        return 0.0
+    return float(dot / ((a_sq ** 0.5) * (b_sq ** 0.5)))
+
+
+@torch.no_grad()
+def _param_delta_stats(params, before_params):
+    max_abs = 0.0
+    l2_sq = 0.0
+    for p, before in zip(params, before_params):
+        delta = (p.detach() - before).float()
+        if delta.numel() == 0:
+            continue
+        max_abs = max(max_abs, float(delta.abs().max().item()))
+        l2_sq += float(torch.sum(delta * delta).item())
+    return max_abs, (l2_sq ** 0.5)
+
+
+@torch.no_grad()
 def _adamw_state_step_and_delta(
     p: torch.Tensor,
     g: torch.Tensor,
@@ -123,6 +154,70 @@ def compute_rmu_retain_loss(
     return retain_loss, retain_inputs, updated_retain_activations, frozen_retain_activations
 
 
+def _tokenize_causal_lm_batch(tokenizer, batch, device, max_length):
+    model_inputs = tokenizer(
+        batch,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    ).to(device)
+    labels = model_inputs["input_ids"].clone()
+    labels = labels.masked_fill(model_inputs["attention_mask"] == 0, -100)
+    model_inputs["labels"] = labels
+    return model_inputs
+
+
+def compute_npo_forget_loss(
+    updated_model,
+    frozen_model,
+    tokenizer,
+    unlearn_batch,
+    beta,
+    max_length,
+    return_stats=False,
+):
+    forget_inputs = _tokenize_causal_lm_batch(
+        tokenizer=tokenizer,
+        batch=unlearn_batch,
+        device=updated_model.device,
+        max_length=max_length,
+    )
+    current_outputs = updated_model(**forget_inputs)
+    current_forget_loss = current_outputs.loss
+
+    with torch.no_grad():
+        ref_outputs = frozen_model(**forget_inputs)
+        ref_forget_loss = ref_outputs.loss
+
+    neg_log_ratios = current_forget_loss - ref_forget_loss
+    forget_loss = -torch.nn.functional.logsigmoid(beta * neg_log_ratios).mean() * 2.0 / beta
+    if return_stats:
+        return (
+            forget_loss,
+            forget_inputs,
+            current_forget_loss.detach(),
+            ref_forget_loss.detach(),
+        )
+    return forget_loss, forget_inputs
+
+
+def compute_ce_retain_loss(
+    updated_model,
+    tokenizer,
+    retain_batch,
+    max_length,
+):
+    retain_inputs = _tokenize_causal_lm_batch(
+        tokenizer=tokenizer,
+        batch=retain_batch,
+        device=updated_model.device,
+        max_length=max_length,
+    )
+    outputs = updated_model(**retain_inputs)
+    return outputs.loss, retain_inputs
+
+
 
 def sam_adv_grad_no_step(
     params,
@@ -141,11 +236,13 @@ def sam_adv_grad_no_step(
 
     eps_list = []
     with torch.no_grad():
-        denom = 0.0
+        denom_sq = 0.0
         for p in params:
             if p.grad is not None:
-                denom += (p.grad.detach().float().norm() ** 2)
-        denom = denom.sqrt().clamp_min(1e-12)
+                g = p.grad.detach().float()
+                denom_sq += float(torch.sum(g * g).item())
+        denom = max(denom_sq, 0.0) ** 0.5
+        denom = max(denom, 1e-12)
 
         for p in params:
             if p.grad is None:
@@ -271,7 +368,17 @@ def run_rmu(
     print("=====")
 
     updated_model = updated_model.train()
-    params = get_params(updated_model, args.layer_ids, args.param_ids)
+    robust_alm_off = (
+        args.dual_mode == "robust_unlearn_sam_alm"
+        and float(args.lagran_lambda_lr) == 0.0
+        and float(args.tau) == 0.0
+        and float(args.alm_rho) == 0.0
+    )
+    if robust_alm_off:
+        params = [p for p in updated_model.parameters() if p.requires_grad]
+        print(f"[robust_unlearn_sam_alm] ALM_OFF uses full trainable params: {len(params)} tensors")
+    else:
+        params = get_params(updated_model, args.layer_ids, args.param_ids)
 
     supported_modes = {
         "alm_sam_sam_joint2",
@@ -312,7 +419,7 @@ def run_rmu(
     )
 
     joint_optimizer = None
-    if args.dual_mode == "base_adamw_alm_joint":
+    if args.dual_mode in {"base_adamw_alm_joint", "robust_unlearn_sam_alm"}:
         joint_optimizer = AdamW(
             params,
             lr=args.retain_lr,
@@ -355,32 +462,53 @@ def run_rmu(
                 # Unlearning loss
                 max_length = 512 if topic_idx == 0 else 768
 
-                def forget_loss_closure():
-                    loss, _, _ = compute_rmu_forget_loss(
-                        updated_model=updated_model,
-                        updated_module=updated_module,
-                        tokenizer=tokenizer,
-                        unlearn_batch=unlearn_batch,
-                        control_vec=control_vec,
-                        max_length=max_length,
-                    )
-                    return loss
+                if args.dual_mode == "robust_unlearn_sam_alm":
+                    def forget_loss_closure():
+                        loss, _ = compute_npo_forget_loss(
+                            updated_model=updated_model,
+                            frozen_model=frozen_model,
+                            tokenizer=tokenizer,
+                            unlearn_batch=unlearn_batch,
+                            beta=args.beta,
+                            max_length=max_length,
+                        )
+                        return loss
+
+                    def retain_loss_closure():
+                        loss, _ = compute_ce_retain_loss(
+                            updated_model=updated_model,
+                            tokenizer=tokenizer,
+                            retain_batch=retain_batch,
+                            max_length=512,
+                        )
+                        return loss
+                else:
+                    def forget_loss_closure():
+                        loss, _, _ = compute_rmu_forget_loss(
+                            updated_model=updated_model,
+                            updated_module=updated_module,
+                            tokenizer=tokenizer,
+                            unlearn_batch=unlearn_batch,
+                            control_vec=control_vec,
+                            max_length=max_length,
+                        )
+                        return loss
+
+                    def retain_loss_closure():
+                        loss, _, _, _ = compute_rmu_retain_loss(
+                            updated_model=updated_model,
+                            frozen_model=frozen_model,
+                            updated_module=updated_module,
+                            frozen_module=frozen_module,
+                            tokenizer=tokenizer,
+                            retain_batch=retain_batch,
+                            alpha=args.alpha[topic_idx],
+                            max_length=512,
+                        )
+                        return loss
 
                 def neg_forget_loss_closure():
                     return -forget_loss_closure()
-
-                def retain_loss_closure():
-                    loss, _, _, _ = compute_rmu_retain_loss(
-                        updated_model=updated_model,
-                        frozen_model=frozen_model,
-                        updated_module=updated_module,
-                        frozen_module=frozen_module,
-                        tokenizer=tokenizer,
-                        retain_batch=retain_batch,
-                        alpha=args.alpha[topic_idx],
-                        max_length=512,
-                    )
-                    return loss
 
                 if args.dual_mode == "alm_sam_sam_joint2":
                     g_r, retain_loss_clean_pre, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
@@ -543,60 +671,150 @@ def run_rmu(
                         "grad_norm_retain": float(gn_joint),
                     }
                 elif args.dual_mode == "robust_unlearn_sam_alm":
-                    g_f, neg_unlearn_loss_clean_pre, neg_unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
-                        params=params,
-                        loss_closure=neg_forget_loss_closure,
-                        rho=args.forget_rho,
-                        clip_norm=args.forget_clip_norm,
-                        perturb_sign=-1.0,
+                    alm_is_effectively_off = (
+                        float(args.lagran_lambda_lr) == 0.0
+                        and float(args.tau) == 0.0
+                        and float(args.alm_rho) == 0.0
                     )
-                    unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
-                    unlearn_loss_adv = -neg_unlearn_loss_adv
-                    g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
-                        params=params,
-                        loss_closure=retain_loss_closure,
-                        clip_norm=args.retain_clip_norm,
-                    )
-                    constraint = float((-args.tau) - neg_unlearn_loss_adv.item())
-                    lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
-                    if args.alm_use_quadratic_grad:
-                        coeff_f = max(lam_next + args.alm_rho * constraint, 0.0)
-                    else:
-                        coeff_f = float(lam_next)
 
-                    for p, fg, rg in zip(params, g_f, g_r):
-                        if fg is None and rg is None:
+                    if alm_is_effectively_off:
+                        joint_optimizer.zero_grad(set_to_none=True)
+                        for p in params:
                             p.grad = None
-                            continue
-                        if rg is None:
-                            p.grad = (-coeff_f * fg).to(dtype=p.dtype, device=p.device)
-                        elif fg is None:
-                            p.grad = (args.retain_lambda * rg).to(dtype=p.dtype, device=p.device)
-                        else:
-                            p.grad = ((args.retain_lambda * rg) - (coeff_f * fg)).to(
-                                dtype=p.dtype, device=p.device
+
+                        g_f, unlearn_loss_clean_pre, unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
+                            params=params,
+                            loss_closure=forget_loss_closure,
+                            rho=args.forget_rho,
+                            clip_norm=args.forget_clip_norm,
+                            perturb_sign=+1.0,
+                        )
+                        g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
+                            params=params,
+                            loss_closure=retain_loss_closure,
+                            clip_norm=args.retain_clip_norm,
+                        )
+                        retain_step_scale = float(args.gamma)
+                        forget_step_scale = float(args.forget_scale)
+                        grad_cos_fg_rg = _grad_lists_cosine(g_f, g_r)
+                        params_before = [p.detach().clone() for p in params]
+
+                        for p, fg, rg in zip(params, g_f, g_r):
+                            if fg is None and rg is None:
+                                p.grad = None
+                                continue
+                            if rg is None:
+                                p.grad = (forget_step_scale * fg).to(dtype=p.dtype, device=p.device)
+                            elif fg is None:
+                                p.grad = (retain_step_scale * rg).to(dtype=p.dtype, device=p.device)
+                            else:
+                                p.grad = ((forget_step_scale * fg) + (retain_step_scale * rg)).to(
+                                    dtype=p.dtype, device=p.device
+                                )
+
+                        combined_grad_norm_preclip = _global_grad_norm(params)
+                        _clip_grad(params, args.clip_grad_norm)
+                        combined_grad_norm_postclip = _global_grad_norm(params)
+                        joint_optimizer.step()
+                        joint_optimizer.zero_grad(set_to_none=True)
+                        max_abs_dtheta, l2_dtheta = _param_delta_stats(params, params_before)
+                        for p in params:
+                            p.grad = None
+
+                        unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                        with torch.no_grad():
+                            _, _, current_forget_ce, ref_forget_ce = compute_npo_forget_loss(
+                                updated_model=updated_model,
+                                frozen_model=frozen_model,
+                                tokenizer=tokenizer,
+                                unlearn_batch=unlearn_batch,
+                                beta=args.beta,
+                                max_length=max_length,
+                                return_stats=True,
                             )
+                        forget_ce_gap = current_forget_ce - ref_forget_ce
+                        metrics = {
+                            "loss": float((forget_step_scale * unlearn_loss + retain_step_scale * retain_loss).item()),
+                            "unlearn_clean": float(unlearn_loss.item()),
+                            "unlearn_adv": float(unlearn_loss_adv.item()),
+                            "retain_clean": float(retain_loss.item()),
+                            "retain_adv": float(retain_loss_clean_pre.item()),
+                            "lambda": 0.0,
+                            "constraint": 0.0,
+                            "grad_norm_forget": float(gn_f_clean),
+                            "grad_norm_retain": float(gn_r_clean),
+                            "coef": 1.0,
+                            "retain_step_scale": float(retain_step_scale),
+                            "forget_step_scale": float(forget_step_scale),
+                            "forget_ce_current": float(current_forget_ce.item()),
+                            "forget_ce_ref": float(ref_forget_ce.item()),
+                            "forget_ce_gap": float(forget_ce_gap.item()),
+                            "debug/grad_cos_fg_rg": float(grad_cos_fg_rg),
+                            "debug/combined_grad_norm_preclip": float(combined_grad_norm_preclip),
+                            "debug/combined_grad_norm_postclip": float(combined_grad_norm_postclip),
+                            "debug/max_abs_dtheta": float(max_abs_dtheta),
+                            "debug/l2_dtheta": float(l2_dtheta),
+                        }
+                    else:
+                        g_f, neg_unlearn_loss_clean_pre, neg_unlearn_loss_adv, gn_f_clean = sam_adv_grad_no_step(
+                            params=params,
+                            loss_closure=neg_forget_loss_closure,
+                            rho=args.forget_rho,
+                            clip_norm=args.forget_clip_norm,
+                            perturb_sign=-1.0,
+                        )
+                        unlearn_loss_clean_pre = -neg_unlearn_loss_clean_pre
+                        unlearn_loss_adv = -neg_unlearn_loss_adv
+                        g_r, retain_loss_clean_pre, gn_r_clean = clean_grad_no_step(
+                            params=params,
+                            loss_closure=retain_loss_closure,
+                            clip_norm=args.retain_clip_norm,
+                        )
+                        constraint = float((-args.tau) - neg_unlearn_loss_adv.item())
+                        lam_next = max(float(lam.item()) + args.lagran_lambda_lr * constraint, 0.0)
+                        if args.alm_use_quadratic_grad:
+                            coeff_f = max(lam_next + args.alm_rho * constraint, 0.0)
+                        else:
+                            coeff_f = float(lam_next)
+                        retain_step_scale = float(args.retain_lambda)
+                        retain_lr_safe = max(float(args.retain_lr), 1e-30)
+                        forget_step_scale = float(coeff_f) * (float(args.forget_lr) / retain_lr_safe)
 
-                    _clip_grad(params, args.clip_grad_norm)
-                    manual_sgd_step(params, args.retain_lr, args.retain_weight_decay)
-                    with torch.no_grad():
-                        lam.fill_(lam_next)
-                    for p in params:
-                        p.grad = None
+                        for p, fg, rg in zip(params, g_f, g_r):
+                            if fg is None and rg is None:
+                                p.grad = None
+                                continue
+                            if rg is None:
+                                p.grad = (-forget_step_scale * fg).to(dtype=p.dtype, device=p.device)
+                            elif fg is None:
+                                p.grad = (retain_step_scale * rg).to(dtype=p.dtype, device=p.device)
+                            else:
+                                p.grad = ((retain_step_scale * rg) - (forget_step_scale * fg)).to(
+                                    dtype=p.dtype, device=p.device
+                                )
 
-                    unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
-                    metrics = {
-                        "loss": float((args.retain_lambda * retain_loss + coeff_f * unlearn_loss).item()),
-                        "unlearn_clean": float(unlearn_loss.item()),
-                        "unlearn_adv": float(unlearn_loss_adv.item()),
-                        "retain_clean": float(retain_loss.item()),
-                        "retain_adv": float(retain_loss_clean_pre.item()),
-                        "lambda": float(lam.item()),
-                        "constraint": constraint,
-                        "grad_norm_forget": float(gn_f_clean),
-                        "grad_norm_retain": float(gn_r_clean),
-                        "coef": float(coeff_f),
-                    }
+                        _clip_grad(params, args.clip_grad_norm)
+                        manual_sgd_step(params, args.retain_lr, args.retain_weight_decay)
+                        with torch.no_grad():
+                            lam.fill_(lam_next)
+                        for p in params:
+                            p.grad = None
+
+                        unlearn_loss, retain_loss = evaluate_losses(forget_loss_closure, retain_loss_closure)
+                        metrics = {
+                            "loss": float((retain_step_scale * retain_loss + coeff_f * unlearn_loss).item()),
+                            "unlearn_clean": float(unlearn_loss.item()),
+                            "unlearn_adv": float(unlearn_loss_adv.item()),
+                            "retain_clean": float(retain_loss.item()),
+                            "retain_adv": float(retain_loss_clean_pre.item()),
+                            "lambda": float(lam.item()),
+                            "constraint": constraint,
+                            "grad_norm_forget": float(gn_f_clean),
+                            "grad_norm_retain": float(gn_r_clean),
+                            "coef": float(coeff_f),
+                            "retain_step_scale": float(retain_step_scale),
+                            "forget_step_scale": float(forget_step_scale),
+                        }
                 elif args.dual_mode == "sharp_minmax_nomask_alm":
                     g_r, retain_loss_clean_pre, retain_loss_adv, gn_r_clean = sam_adv_grad_no_step(
                         params=params,
@@ -861,6 +1079,7 @@ def get_args():
     parser.add_argument("--clip_grad_norm", type=float, default=1.0)
     parser.add_argument("--joint_clip_norm", type=float, default=0.0)
     parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--forget_scale", type=float, default=1.0)
     parser.add_argument("--retain_lambda", type=float, default=2.0)
     parser.add_argument("--alm_rho", type=float, default=1.0)

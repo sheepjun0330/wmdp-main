@@ -49,6 +49,8 @@ LAYER_ID="${LAYER_ID:-7}"
 LAYER_IDS="${LAYER_IDS:-5,6,7}"
 PARAM_IDS="${PARAM_IDS:-6}"
 ALPHA="${ALPHA:-1200,1200}"
+BETA="${BETA:-0.1}"
+GAMMA="${GAMMA:-1.0}"
 STEERING_COEFFS="${STEERING_COEFFS:-6.5,6.5}"
 VERBOSE_FLAG="${VERBOSE_FLAG:-0}"
 USE_WANDB="${USE_WANDB:-0}"
@@ -73,6 +75,8 @@ SKIP_EXISTING_MODELS="${SKIP_EXISTING_MODELS:-1}"
 FORGET_LRS=("${FORGET_LRS[@]:-5e-6}")
 RETAIN_LRS=("${RETAIN_LRS[@]:-5e-6}")
 JOINT_LRS=("${JOINT_LRS[@]:-5e-6}")
+BETAS=("${BETAS[@]:-${BETA}}")
+GAMMAS=("${GAMMAS[@]:-${GAMMA}}")
 FORGET_RHOS=("${FORGET_RHOS[@]:-1e-5}")
 RETAIN_RHOS=("${RETAIN_RHOS[@]:-1e-5}")
 TAUS=("${TAUS[@]:-0.01}")
@@ -87,6 +91,10 @@ WEIGHT_DECAYS=("${WEIGHT_DECAYS[@]:-0.0}")
 JOINT_WEIGHT_DECAYS=("${JOINT_WEIGHT_DECAYS[@]:-0.0}")
 SEEDS=("${SEEDS[@]:-42}")
 LOCK_RHOS="${LOCK_RHOS:-0}"
+LOCK_LRS="${LOCK_LRS:-0}"
+USE_JOINT_LR_AXIS="${USE_JOINT_LR_AXIS:-1}"
+USE_RETAIN_RHO_AXIS="${USE_RETAIN_RHO_AXIS:-1}"
+CLIP_GRAD_NORM="${CLIP_GRAD_NORM:-1.0}"
 
 if [[ "${ALM_ON}" == "0" ]]; then
   TAUS=(0)
@@ -127,11 +135,23 @@ has_saved_model() {
 
 for seed in "${SEEDS[@]}"; do
   for f_lr in "${FORGET_LRS[@]}"; do
-    for r_lr in "${RETAIN_LRS[@]}"; do
-      for j_lr in "${JOINT_LRS[@]}"; do
+    if [[ "${LOCK_LRS}" == "1" ]]; then
+      r_lr_values=("${f_lr}")
+    else
+      r_lr_values=("${RETAIN_LRS[@]}")
+    fi
+    for r_lr in "${r_lr_values[@]}"; do
+      if [[ "${USE_JOINT_LR_AXIS}" == "1" ]]; then
+        j_lr_values=("${JOINT_LRS[@]}")
+      else
+        j_lr_values=("${JOINT_LRS[0]}")
+      fi
+      for j_lr in "${j_lr_values[@]}"; do
         for tau in "${TAUS[@]}"; do
           for f_rho in "${FORGET_RHOS[@]}"; do
-            if [[ "${LOCK_RHOS}" == "1" ]]; then
+            if [[ "${USE_RETAIN_RHO_AXIS}" != "1" ]]; then
+              r_rho_values=("${RETAIN_RHOS[0]}")
+            elif [[ "${LOCK_RHOS}" == "1" ]]; then
               r_rho_values=("${f_rho}")
             else
               r_rho_values=("${RETAIN_RHOS[@]}")
@@ -142,11 +162,13 @@ for seed in "${SEEDS[@]}"; do
                   for alm_rho in "${ALM_RHOS[@]}"; do
                     for forget_scale in "${FORGET_SCALES[@]}"; do
                       for retain_lambda in "${RETAIN_LAMBDAS[@]}"; do
-                        for uam_gamma in "${UAM_GAMMAS[@]}"; do
-                          for uam_eps in "${UAM_EPSS[@]}"; do
-                            for wd in "${WEIGHT_DECAYS[@]}"; do
-                              for joint_wd in "${JOINT_WEIGHT_DECAYS[@]}"; do
-                                RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_fscale${forget_scale}_rlam${retain_lambda}_ugamma${uam_gamma}_ueps${uam_eps}_wd${wd}_jwd${joint_wd}"
+                        for gamma in "${GAMMAS[@]}"; do
+                          for beta in "${BETAS[@]}"; do
+                            for uam_gamma in "${UAM_GAMMAS[@]}"; do
+                              for uam_eps in "${UAM_EPSS[@]}"; do
+                                for wd in "${WEIGHT_DECAYS[@]}"; do
+                                  for joint_wd in "${JOINT_WEIGHT_DECAYS[@]}"; do
+                                    RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_beta${beta}_gamma${gamma}_fscale${forget_scale}_rlam${retain_lambda}_ugamma${uam_gamma}_ueps${uam_eps}_wd${wd}_jwd${joint_wd}"
                                 METHOD_OUTPUT_DIR="${BASE_OUTPUT_DIR}/${METHOD}"
                                 ALM_OUTPUT_DIR="${METHOD_OUTPUT_DIR}/${ALM_DIR}"
                                 MODEL_OUTPUT_DIR="${ALM_OUTPUT_DIR}/${RUN_NAME}"
@@ -170,6 +192,9 @@ for seed in "${SEEDS[@]}"; do
                                 echo "MODEL_DIR  = ${MODEL_OUTPUT_DIR}"
                                 echo "EVAL_LOG   = ${EVAL_LOG_FILE}"
                                 echo "EVAL_JSON  = ${EVAL_RESULT_FILE}"
+                                echo "CLIP_NORM  = ${CLIP_GRAD_NORM}"
+                                echo "BETA       = ${beta}"
+                                echo "GAMMA      = ${gamma}"
                                 echo "================================================="
 
                                 if [[ "${SKIP_EXISTING_RESULTS}" == "1" ]] && is_nonempty_file "${EVAL_RESULT_FILE}"; then
@@ -190,6 +215,8 @@ for seed in "${SEEDS[@]}"; do
                                   --forget_corpora "${FORGET_CORPORA}"
                                   --dual_mode "${METHOD}"
                                   --alpha "${ALPHA}"
+                                  --beta "${beta}"
+                                  --gamma "${gamma}"
                                   --steering_coeffs "${STEERING_COEFFS}"
                                   --batch_size "${BATCH_SIZE}"
                                   --max_num_batches "${MAX_NUM_BATCHES}"
@@ -216,6 +243,7 @@ for seed in "${SEEDS[@]}"; do
                                   --retain_weight_decay "${wd}"
                                   --forget_weight_decay "${wd}"
                                   --joint_weight_decay "${joint_wd}"
+                                  --clip_grad_norm "${CLIP_GRAD_NORM}"
                                 )
 
                                 if [[ "${VERBOSE_FLAG}" == "1" ]]; then
@@ -255,6 +283,8 @@ for seed in "${SEEDS[@]}"; do
                                 else
                                   echo "[WARN] Failed: ${RUN_NAME} (continue)"
                                 fi
+                                  done
+                                done
                               done
                             done
                           done
