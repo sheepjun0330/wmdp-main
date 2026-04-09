@@ -71,6 +71,7 @@ EVAL_LOG_DIRNAME="${EVAL_LOG_DIRNAME:-eval_logs}"
 EVAL_RESULTS_DIRNAME="${EVAL_RESULTS_DIRNAME:-eval_results}"
 SKIP_EXISTING_RESULTS="${SKIP_EXISTING_RESULTS:-1}"
 SKIP_EXISTING_MODELS="${SKIP_EXISTING_MODELS:-1}"
+EVAL_EVERY_N="${EVAL_EVERY_N:-1}"
 
 FORGET_LRS=("${FORGET_LRS[@]:-5e-6}")
 RETAIN_LRS=("${RETAIN_LRS[@]:-5e-6}")
@@ -130,6 +131,85 @@ has_saved_model() {
   [[ -n "$(find "${model_dir}" -maxdepth 1 -type f \( -name '*.safetensors' -o -name 'pytorch_model*.bin' \) -print -quit 2>/dev/null)" ]]
 }
 
+slugify_name_value() {
+  local value="$1"
+  value="${value//,/x}"
+  value="${value// /}"
+  printf '%s' "${value}"
+}
+
+append_run_part() {
+  local label="$1"
+  local value="$2"
+  RUN_PARTS+=("${label}$(slugify_name_value "${value}")")
+}
+
+if ! [[ "${EVAL_EVERY_N}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[ERROR] EVAL_EVERY_N must be a positive integer" >&2
+  exit 1
+fi
+
+PENDING_EVAL_MODEL_DIRS=()
+PENDING_EVAL_RUN_NAMES=()
+PENDING_EVAL_RESULT_FILES=()
+
+queue_eval_run() {
+  local run_name="$1"
+  local model_dir="$2"
+  local result_file="$3"
+
+  PENDING_EVAL_RUN_NAMES+=("${run_name}")
+  PENDING_EVAL_MODEL_DIRS+=("${model_dir}")
+  PENDING_EVAL_RESULT_FILES+=("${result_file}")
+  echo "[INFO] Queued for eval (${#PENDING_EVAL_MODEL_DIRS[@]}/${EVAL_EVERY_N}): ${run_name}"
+}
+
+run_pending_evals() {
+  local pending_count="${#PENDING_EVAL_MODEL_DIRS[@]}"
+  local eval_status=0
+
+  if [[ "${RUN_EVAL}" != "1" || "${pending_count}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "[INFO] Running eval batch for ${pending_count} model(s)"
+  if GPU_ID="${EVAL_GPU_ID}" \
+    DEVICE="${EVAL_DEVICE}" \
+    BATCH_SIZE="${EVAL_BATCH_SIZE}" \
+    TASKS="${EVAL_TASKS}" \
+    LOG_DIR="${EVAL_LOG_DIR}" \
+    RESULTS_DIR="${EVAL_RESULTS_DIR}" \
+    bash "${EVAL_SCRIPT}" "${PENDING_EVAL_MODEL_DIRS[@]}"; then
+    eval_status=0
+  else
+    eval_status=$?
+  fi
+
+  if [[ ${eval_status} -ne 0 ]]; then
+    echo "[WARN] Eval batch failed with status ${eval_status} (continue)"
+  fi
+
+  for idx in "${!PENDING_EVAL_MODEL_DIRS[@]}"; do
+    local run_name="${PENDING_EVAL_RUN_NAMES[idx]}"
+    local model_dir="${PENDING_EVAL_MODEL_DIRS[idx]}"
+    local result_file="${PENDING_EVAL_RESULT_FILES[idx]}"
+
+    if is_nonempty_file "${result_file}"; then
+      echo "[INFO] Eval completed: ${run_name}"
+      if [[ "${DELETE_MODEL_AFTER_EVAL}" == "1" ]]; then
+        rm -rf "${model_dir}"
+        echo "[INFO] Deleted model dir after eval: ${model_dir}"
+      fi
+    else
+      echo "[WARN] Eval result missing: ${run_name} (model kept)"
+    fi
+  done
+
+  PENDING_EVAL_MODEL_DIRS=()
+  PENDING_EVAL_RUN_NAMES=()
+  PENDING_EVAL_RESULT_FILES=()
+}
+
 for seed in "${SEEDS[@]}"; do
   for f_lr in "${FORGET_LRS[@]}"; do
     if [[ "${LOCK_LRS}" == "1" ]]; then
@@ -162,7 +242,50 @@ for seed in "${SEEDS[@]}"; do
                         for gamma in "${GAMMAS[@]}"; do
                           for beta in "${BETAS[@]}"; do
                             for wd in "${WEIGHT_DECAYS[@]}"; do
-                              RUN_NAME="${METHOD}_${ALM_TAG}_seed${seed}_flr${f_lr}_rlr${r_lr}_jlr${j_lr}_frho${f_rho}_rrho${r_rho}_tau${tau}_llr${lam_lr}_initL${lam_init}_almrho${alm_rho}_beta${beta}_gamma${gamma}_fscale${forget_scale}_rlam${retain_lambda}_wd${wd}"
+                              RUN_PARTS=("${METHOD}" "${ALM_TAG}" "seed${seed}")
+                              append_run_part "alpha" "${ALPHA}"
+                              append_run_part "sc" "${STEERING_COEFFS}"
+                              append_run_part "flr" "${f_lr}"
+                              append_run_part "rlr" "${r_lr}"
+
+                              if [[ "${USE_JOINT_LR_AXIS}" == "1" || "${j_lr}" != "${r_lr}" ]]; then
+                                append_run_part "jlr" "${j_lr}"
+                              fi
+
+                              append_run_part "frho" "${f_rho}"
+
+                              if [[ "${r_rho}" != "${f_rho}" ]]; then
+                                append_run_part "rrho" "${r_rho}"
+                              fi
+
+                              if [[ "${ALM_ON}" == "1" ]]; then
+                                append_run_part "tau" "${tau}"
+                                append_run_part "llr" "${lam_lr}"
+                                append_run_part "initL" "${lam_init}"
+                                append_run_part "almrho" "${alm_rho}"
+                              fi
+
+                              if [[ "${#BETAS[@]}" -gt 1 || "${beta}" != "0.1" ]]; then
+                                append_run_part "beta" "${beta}"
+                              fi
+
+                              if [[ "${#GAMMAS[@]}" -gt 1 || "${gamma}" != "1.0" ]]; then
+                                append_run_part "gamma" "${gamma}"
+                              fi
+
+                              if [[ "${#FORGET_SCALES[@]}" -gt 1 || "${forget_scale}" != "1.0" ]]; then
+                                append_run_part "fscale" "${forget_scale}"
+                              fi
+
+                              if [[ "${#RETAIN_LAMBDAS[@]}" -gt 1 || "${retain_lambda}" != "2.0" ]]; then
+                                append_run_part "rlam" "${retain_lambda}"
+                              fi
+
+                              if [[ "${#WEIGHT_DECAYS[@]}" -gt 1 || "${wd}" != "0.0" ]]; then
+                                append_run_part "wd" "${wd}"
+                              fi
+
+                              RUN_NAME="$(IFS=_; printf '%s' "${RUN_PARTS[*]}")"
                                 METHOD_OUTPUT_DIR="${BASE_OUTPUT_DIR}/${METHOD}"
                                 ALM_OUTPUT_DIR="${METHOD_OUTPUT_DIR}/${ALM_DIR}"
                                 MODEL_OUTPUT_DIR="${ALM_OUTPUT_DIR}/${RUN_NAME}"
@@ -253,20 +376,9 @@ for seed in "${SEEDS[@]}"; do
 
                                 if [[ ${train_status} -eq 0 ]]; then
                                   if [[ "${RUN_EVAL}" == "1" ]]; then
-                                    echo "[INFO] Running eval for ${RUN_NAME}"
-                                    GPU_ID="${EVAL_GPU_ID}" \
-                                    DEVICE="${EVAL_DEVICE}" \
-                                    BATCH_SIZE="${EVAL_BATCH_SIZE}" \
-                                    TASKS="${EVAL_TASKS}" \
-                                    LOG_DIR="${EVAL_LOG_DIR}" \
-                                    RESULTS_DIR="${EVAL_RESULTS_DIR}" \
-                                    bash "${EVAL_SCRIPT}" "${MODEL_OUTPUT_DIR}"
-                                    eval_status=$?
-                                    if [[ ${eval_status} -ne 0 ]]; then
-                                      echo "[WARN] Eval failed: ${RUN_NAME} (continue)"
-                                    elif [[ "${DELETE_MODEL_AFTER_EVAL}" == "1" ]]; then
-                                      rm -rf "${MODEL_OUTPUT_DIR}"
-                                      echo "[INFO] Deleted model dir after eval: ${MODEL_OUTPUT_DIR}"
+                                    queue_eval_run "${RUN_NAME}" "${MODEL_OUTPUT_DIR}" "${EVAL_RESULT_FILE}"
+                                    if [[ "${#PENDING_EVAL_MODEL_DIRS[@]}" -ge "${EVAL_EVERY_N}" ]]; then
+                                      run_pending_evals
                                     fi
                                   fi
                                 else
@@ -287,3 +399,5 @@ for seed in "${SEEDS[@]}"; do
     done
   done
 done
+
+run_pending_evals

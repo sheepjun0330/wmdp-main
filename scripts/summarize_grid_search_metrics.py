@@ -8,6 +8,41 @@ from pathlib import Path
 from typing import Iterable
 
 
+PARAM_PREFIXES = (
+    ("seed", "seed"),
+    ("alpha", "alpha"),
+    ("sc", "steering_coeffs"),
+    ("flr", "forget_lr"),
+    ("rlr", "retain_lr"),
+    ("jlr", "joint_lr"),
+    ("frho", "forget_rho"),
+    ("rrho", "retain_rho"),
+    ("tau", "tau"),
+    ("llr", "lambda_lr"),
+    ("initL", "lambda_init"),
+    ("almrho", "alm_rho"),
+    ("beta", "beta"),
+    ("gamma", "gamma"),
+    ("fscale", "forget_scale"),
+    ("rlam", "retain_lambda"),
+    ("wd", "weight_decay"),
+)
+
+
+def normalize_param_value(value: str) -> str:
+    return value.replace("x", ",")
+
+
+def parse_run_name_params(run_name: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for token in run_name.split("_"):
+        for prefix, key in PARAM_PREFIXES:
+            if token.startswith(prefix):
+                params[key] = normalize_param_value(token[len(prefix) :])
+                break
+    return params
+
+
 def extract_record(json_path: Path, root_dir: Path) -> dict[str, str | float]:
     rel_parts = json_path.relative_to(root_dir).parts
     if len(rel_parts) < 4:
@@ -33,20 +68,23 @@ def extract_record(json_path: Path, root_dir: Path) -> dict[str, str | float]:
         payload = json.load(f)
 
     results = payload.get("results", {})
-    wmdp_key = f"wmdp_{domain}"
-    wmdp_acc = results.get(wmdp_key, {}).get("acc,none")
+    params = parse_run_name_params(json_path.stem)
+    wmdp_bio_acc = results.get("wmdp_bio", {}).get("acc,none")
+    wmdp_cyber_acc = results.get("wmdp_cyber", {}).get("acc,none")
     mmlu_acc = results.get("mmlu", {}).get("acc,none")
 
-    return {
+    record: dict[str, str | float] = {
         "domain": domain,
         "method": method,
         "alm_dir": alm_dir,
         "run_name": json_path.stem,
-        "wmdp_task": wmdp_key,
-        "wmdp_acc": "" if wmdp_acc is None else float(wmdp_acc),
+        "wmdp_bio_acc": "" if wmdp_bio_acc is None else float(wmdp_bio_acc),
+        "wmdp_cyber_acc": "" if wmdp_cyber_acc is None else float(wmdp_cyber_acc),
         "mmlu_acc": "" if mmlu_acc is None else float(mmlu_acc),
         "json_path": str(json_path),
     }
+    record.update(params)
+    return record
 
 
 def iter_records(root_dir: Path) -> Iterable[dict[str, str | float]]:
@@ -58,7 +96,7 @@ def iter_records(root_dir: Path) -> Iterable[dict[str, str | float]]:
 
 
 def sort_records(records: list[dict[str, str | float]], sort_by: str) -> list[dict[str, str | float]]:
-    if sort_by in {"wmdp_acc", "mmlu_acc"}:
+    if sort_by in {"wmdp_bio_acc", "wmdp_cyber_acc", "mmlu_acc"}:
         return sorted(
             records,
             key=lambda row: (row[sort_by] == "", row[sort_by]),
@@ -72,7 +110,17 @@ def print_preview(records: list[dict[str, str | float]], limit: int) -> None:
         print("[INFO] No records found.")
         return
 
-    headers = ("domain", "method", "alm_dir", "wmdp_acc", "mmlu_acc", "run_name")
+    headers = (
+        "alpha",
+        "steering_coeffs",
+        "forget_lr",
+        "retain_lr",
+        "tau",
+        "wmdp_bio_acc",
+        "wmdp_cyber_acc",
+        "mmlu_acc",
+        "run_name",
+    )
     widths = {header: len(header) for header in headers}
     preview_rows = records[:limit]
 
@@ -88,7 +136,7 @@ def print_preview(records: list[dict[str, str | float]], limit: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Summarize wmdp_{domain} and mmlu accuracy from grid-search eval JSONs.")
+    parser = argparse.ArgumentParser(description="Summarize parameter combinations and WMDP/MMLU accuracy from grid-search eval JSONs.")
     parser.add_argument(
         "--root",
         type=Path,
@@ -103,7 +151,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--sort-by",
-        choices=("path", "wmdp_acc", "mmlu_acc"),
+        choices=("path", "wmdp_bio_acc", "wmdp_cyber_acc", "mmlu_acc"),
         default="path",
         help="Sort order for CSV and preview.",
     )
@@ -127,7 +175,33 @@ def main() -> None:
     records = sort_records(records, args.sort_by)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["domain", "method", "alm_dir", "wmdp_task", "wmdp_acc", "mmlu_acc", "run_name", "json_path"]
+    fieldnames = [
+        "domain",
+        "method",
+        "alm_dir",
+        "seed",
+        "alpha",
+        "steering_coeffs",
+        "forget_lr",
+        "retain_lr",
+        "joint_lr",
+        "forget_rho",
+        "retain_rho",
+        "tau",
+        "lambda_lr",
+        "lambda_init",
+        "alm_rho",
+        "beta",
+        "gamma",
+        "forget_scale",
+        "retain_lambda",
+        "weight_decay",
+        "wmdp_bio_acc",
+        "wmdp_cyber_acc",
+        "mmlu_acc",
+        "run_name",
+        "json_path",
+    ]
     with args.output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
