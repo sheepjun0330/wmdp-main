@@ -15,7 +15,13 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 MODEL="${MODEL:-HuggingFaceH4/zephyr-7b-beta}"
-GPU_ID="${GPU_ID:-0}"
+if [[ -n "${GPU_ID:-}" ]]; then
+  GPU_IDS="${GPU_ID}"
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  GPU_IDS="${CUDA_VISIBLE_DEVICES}"
+else
+  GPU_IDS="0"
+fi
 DOMAIN="${DOMAIN:-bio}"
 
 case "${DOMAIN}" in
@@ -62,7 +68,7 @@ ALM_OFF_LAM_INITS=("${ALM_OFF_LAM_INITS[@]:-${ALM_OFF_LAM_INIT}}")
 ALM_OFF_KEEP_RHO="${ALM_OFF_KEEP_RHO:-0}"
 RUN_EVAL="${RUN_EVAL:-1}"
 EVAL_SCRIPT="${EVAL_SCRIPT:-${ROOT_DIR}/eval.sh}"
-EVAL_GPU_ID="${EVAL_GPU_ID:-${GPU_ID}}"
+EVAL_GPU_ID="${EVAL_GPU_ID:-${GPU_IDS}}"
 EVAL_DEVICE="${EVAL_DEVICE:-cuda:0}"
 EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-${BATCH_SIZE}}"
 EVAL_TASKS="${EVAL_TASKS:-mmlu,wmdp}"
@@ -117,7 +123,7 @@ else
 fi
 
 mkdir -p "${BASE_OUTPUT_DIR}"
-export CUDA_VISIBLE_DEVICES="${GPU_ID}"
+export CUDA_VISIBLE_DEVICES="${GPU_IDS}"
 
 is_nonempty_file() {
   local path="$1"
@@ -305,7 +311,7 @@ for seed in "${SEEDS[@]}"; do
                                   echo "ALM_MODE   = fixed_forget_coeff"
                                   echo "FIXED_COEF = ${ALM_OFF_LAM_INIT}"
                                 fi
-                                echo "GPU        = ${GPU_ID}"
+                                echo "GPU        = ${GPU_IDS}"
                                 echo "MODEL_DIR  = ${MODEL_OUTPUT_DIR}"
                                 echo "EVAL_LOG   = ${EVAL_LOG_FILE}"
                                 echo "EVAL_JSON  = ${EVAL_RESULT_FILE}"

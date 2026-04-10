@@ -4,7 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="${SCRIPT_DIR}"
 
-GPU_ID="${GPU_ID:-7}"
+if [[ -n "${GPU_ID:-}" ]]; then
+  GPU_ID="${GPU_ID}"
+elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  GPU_ID="${CUDA_VISIBLE_DEVICES}"
+else
+  GPU_ID="7"
+fi
 DEVICE="${DEVICE:-cuda:0}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 TASKS="${TASKS:-mmlu,wmdp}"
